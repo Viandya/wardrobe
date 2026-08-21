@@ -487,7 +487,7 @@ function Auth() {
     if (!email.includes("@")) return setErr("Проверь адрес почты");
     setBusy(true); setErr("");
     const { error } = await supabase.auth.signInWithOtp({
-      email, options: { emailRedirectTo: window.location.origin },
+      email, options: { emailRedirectTo: window.location.origin + import.meta.env.BASE_URL },
     });
     setBusy(false);
     if (error) setErr(error.message); else setSent(true);
