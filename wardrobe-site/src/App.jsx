@@ -479,18 +479,43 @@ const Section = ({ eyebrow, title, children, right }) => (
 /* ─────────────────────────  ВХОД  ───────────────────────── */
 function Auth() {
   const [email, setEmail] = useState("");
+  const [pass, setPass] = useState("");
   const [sent, setSent] = useState(false);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
 
-  const send = async () => {
+  /* адрес возврата: на GitHub Pages сайт лежит в подпапке */
+  const backTo = window.location.origin + import.meta.env.BASE_URL;
+
+  const withPassword = async () => {
+    if (!email.includes("@") || pass.length < 6) return setErr("Проверь почту и пароль");
+    setBusy(true); setErr("");
+    const { error } = await supabase.auth.signInWithPassword({ email, password: pass });
+    setBusy(false);
+    if (error) {
+      setErr(error.message === "Invalid login credentials"
+        ? "Почта или пароль не подходят"
+        : error.message);
+    }
+  };
+
+  const withLink = async () => {
     if (!email.includes("@")) return setErr("Проверь адрес почты");
     setBusy(true); setErr("");
     const { error } = await supabase.auth.signInWithOtp({
-      email, options: { emailRedirectTo: window.location.origin + import.meta.env.BASE_URL },
+      email, options: { emailRedirectTo: backTo },
     });
     setBusy(false);
-    if (error) setErr(error.message); else setSent(true);
+    if (error) {
+      setErr(error.message.includes("rate limit")
+        ? "Слишком много писем за час — войди по паролю или подожди"
+        : error.message);
+    } else setSent(true);
+  };
+
+  const field = {
+    width: "100%", border: `1px solid ${C.line}`, background: "transparent",
+    padding: "12px", fontSize: 15, borderRadius: 2, color: C.ink, marginBottom: 10,
   };
 
   return (
@@ -498,23 +523,33 @@ function Auth() {
       <div style={{ width: "100%", maxWidth: 360 }}>
         <div style={{ ...S.serif, fontSize: 30, marginBottom: 6 }}>Гардероб<span style={{ color: C.olive }}>.</span></div>
         <div style={{ fontSize: 13, color: C.ink60, lineHeight: 1.6, marginBottom: 22 }}>
-          Вход по ссылке на почту — пароль придумывать не нужно. Гардероб будет одинаковым на телефоне и на ноутбуке.
+          Войди по паролю или запроси ссылку на почту. Гардероб будет одинаковым на телефоне и на ноутбуке.
         </div>
+
         {sent ? (
           <div style={{ border: `1px solid ${C.olive}`, background: C.card, padding: 16, fontSize: 13, lineHeight: 1.6 }}>
             Письмо ушло на <b>{email}</b>. Открой ссылку из него на том устройстве, где хочешь войти.
             Если письма нет — проверь папку «Спам».
+            <div style={{ marginTop: 12 }}>
+              <Btn size="sm" variant="ghost" onClick={() => setSent(false)}>Назад</Btn>
+            </div>
           </div>
         ) : (
           <>
             <input value={email} onChange={(e) => setEmail(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && send()}
-              placeholder="почта" type="email" autoComplete="email"
-              style={{ width: "100%", border: `1px solid ${C.line}`, background: "transparent", padding: "12px 12px", fontSize: 15, borderRadius: 2, color: C.ink, marginBottom: 10 }} />
-            <Btn onClick={send} disabled={busy} style={{ width: "100%" }}>
-              {busy ? "Отправляю…" : "Прислать ссылку"}
+              placeholder="почта" type="email" autoComplete="email" style={field} />
+            <input value={pass} onChange={(e) => setPass(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && withPassword()}
+              placeholder="пароль" type="password" autoComplete="current-password" style={field} />
+            <Btn onClick={withPassword} disabled={busy} style={{ width: "100%" }}>
+              {busy ? "Секунду…" : "Войти"}
             </Btn>
-            {err && <div style={{ color: C.rust, fontSize: 12, marginTop: 10 }}>{err}</div>}
+            <div style={{ marginTop: 10 }}>
+              <Btn variant="ghost" onClick={withLink} disabled={busy} style={{ width: "100%" }}>
+                Прислать ссылку на почту
+              </Btn>
+            </div>
+            {err && <div style={{ color: C.rust, fontSize: 12, marginTop: 10, lineHeight: 1.5 }}>{err}</div>}
           </>
         )}
       </div>
