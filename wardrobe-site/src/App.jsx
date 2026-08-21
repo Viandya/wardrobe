@@ -353,9 +353,15 @@ function buildLook(pool, opts) {
     if (!has("shoes")) { const sh = pick(by("shoes")); if (sh) chosen.push(sh); }
     if (season === "winter" && !has("outerwear")) { const o = pick(by("outerwear")); if (o) chosen.push(o); }
     else if (season === "demi" && !has("outerwear") && Math.random() < 0.6) { const o = pick(by("outerwear")); if (o) chosen.push(o); }
-    if (!has("bag") && Math.random() < 0.85) { const g = pick(by("bag")); if (g) chosen.push(g); }
-    const extras = [...by("accessory"), ...by("jewelry")].sort(() => Math.random() - 0.5);
-    extras.slice(0, Math.random() < 0.5 ? 1 : 2).forEach((e) => { if (!chosen.includes(e)) chosen.push(e); });
+    if (!has("bag") && Math.random() < 0.75) { const g = pick(by("bag")); if (g) chosen.push(g); }
+    /* аксессуар — необязательная деталь, а не обязательный элемент.
+       Больше половины образов обходятся без него, а те, что уже мелькали
+       в этой подборке, пропускаем, чтобы один ремень не кочевал везде. */
+    const avoid = new Set(opts.avoid || []);
+    const fresh = [...by("accessory"), ...by("jewelry")].filter((e) => !avoid.has(e.id));
+    const nExtra = Math.random() < 0.55 ? 0 : Math.random() < 0.85 ? 1 : 2;
+    fresh.sort(() => Math.random() - 0.5).slice(0, nExtra)
+      .forEach((e) => { if (!chosen.includes(e)) chosen.push(e); });
 
     const clean = chosen.filter(Boolean);
     if (clean.length < 3) continue;
@@ -572,7 +578,8 @@ function Auth() {
 /* ─────────────────────────  ПРИЛОЖЕНИЕ  ───────────────────────── */
 export default function App() {
   const [session, setSession] = useState(undefined);
-  const [tab, setTab] = useState("studio");
+  const [tab, setTab] = useState("feed");
+  const [draft, setDraft] = useState(null);
   const [items, setItems] = useState([]);
   const [looks, setLooks] = useState([]);
   const [settings, setSettings] = useState({ city: "", lat: null, lon: null, cityLabel: "" });
@@ -692,7 +699,10 @@ export default function App() {
   if (!session) return <Auth />;
   if (!ready) return screen("Открываем гардероб…");
 
+  const openInStudio = (look) => { setDraft({ ...look, id: "look_" + Date.now() }); setTab("studio"); };
+
   const TABS = [
+    { id: "feed", ru: "Подборка" },
     { id: "studio", ru: "Студия" },
     { id: "wardrobe", ru: "Гардероб" },
     { id: "capsules", ru: "Капсулы" },
@@ -722,8 +732,12 @@ export default function App() {
       </header>
 
       <main style={{ maxWidth: 1180, margin: "0 auto", padding: "22px 16px 90px" }}>
+        {tab === "feed" && (
+          <Feed items={items} itemsById={itemsById} looks={looks} saveLooks={saveLooks}
+            markWorn={markWorn} say={say} openInStudio={openInStudio} suggestedSeason={suggestedSeason} />
+        )}
         {tab === "studio" && (
-          <Studio items={items} itemsById={itemsById} looks={looks} saveLooks={saveLooks}
+          <Studio draft={draft} items={items} itemsById={itemsById} looks={looks} saveLooks={saveLooks}
             weather={weather} suggestedSeason={suggestedSeason} settings={settings}
             saveSettings={saveSettings} say={say} markWorn={markWorn} />
         )}
@@ -754,8 +768,115 @@ export default function App() {
   );
 }
 
+/* ─────────────────────────  ПОДБОРКА  ───────────────────────── */
+function Feed({ items, itemsById, looks, saveLooks, markWorn, say, openInStudio, suggestedSeason }) {
+  const [season, setSeason] = useState("any");
+  const [occasion, setOccasion] = useState("daily");
+  const [variants, setVariants] = useState([]);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => { if (suggestedSeason && season === "any") setSeason(suggestedSeason); }, [suggestedSeason]);
+
+  const makeBatch = useCallback((n = 9) => {
+    const out = [];
+    const usedExtras = [];
+    for (let k = 0; k < n * 8 && out.length < n; k++) {
+      const l = buildLook(items, { season, occasion, pinned: null, tpl: "classic", avoid: usedExtras });
+      if (!l) break;
+      const key = l.placed.map((p) => p.itemId).sort().join("|");
+      if (out.some((o) => o.placed.map((p) => p.itemId).sort().join("|") === key)) continue;
+      l.placed.forEach((p) => {
+        const it = itemsById[p.itemId];
+        if (it && (it.category === "accessory" || it.category === "jewelry")) usedExtras.push(it.id);
+      });
+      out.push(l);
+    }
+    return out;
+  }, [items, itemsById, season, occasion]);
+
+  /* подборка собирается сама при открытии и при смене условий */
+  useEffect(() => {
+    if (items.length < 3) { setVariants([]); return; }
+    setBusy(true);
+    const t = setTimeout(() => { setVariants(makeBatch(9)); setBusy(false); }, 10);
+    return () => clearTimeout(t);
+  }, [makeBatch, items.length]);
+
+  const replaceOne = (idx) => {
+    const used = variants.flatMap((v) => v.placed.map((p) => p.itemId));
+    const l = buildLook(items, { season, occasion, pinned: null, tpl: "classic", avoid: used });
+    if (l) setVariants((prev) => prev.map((v, i) => (i === idx ? l : v)));
+  };
+
+  const keep = async (look) => {
+    const name = look.name || `Капсула ${looks.length + 1}`;
+    await saveLooks([{ ...look, name }, ...looks]);
+    say("Сохранено в капсулы");
+  };
+
+  if (items.length < 3)
+    return (
+      <div style={{ border: `1px dashed ${C.line}`, padding: 40, textAlign: "center", color: C.ink60, fontSize: 13, lineHeight: 1.6 }}>
+        Для подборки нужно хотя бы три вещи — верх, низ и обувь.<br />Загрузи их на вкладке «Гардероб».
+      </div>
+    );
+
+  return (
+    <Section eyebrow="Собрано для тебя" title="Подборка"
+      right={<Btn variant="ghost" onClick={() => setVariants(makeBatch(9))}>Обновить</Btn>}>
+      <div style={{ display: "flex", gap: 6, overflowX: "auto", marginBottom: 10 }} className="hide-scroll">
+        <Chip active={season === "any"} onClick={() => setSeason("any")}>Любой сезон</Chip>
+        {SEASONS.map((s) => (
+          <Chip key={s.id} active={season === s.id} onClick={() => setSeason(s.id)}>{s.ru}</Chip>
+        ))}
+      </div>
+      <div style={{ display: "flex", gap: 6, overflowX: "auto", marginBottom: 18 }} className="hide-scroll">
+        {OCCASIONS.map((o) => (
+          <Chip key={o.id} active={occasion === o.id} onClick={() => setOccasion(o.id)}>{o.ru}</Chip>
+        ))}
+      </div>
+
+      {busy && <div style={{ fontSize: 13, color: C.ink60, marginBottom: 12 }}>Собираю варианты…</div>}
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(230px,1fr))", gap: 14 }}>
+        {variants.map((l, idx) => {
+          const its = l.placed.map((p) => itemsById[p.itemId]).filter(Boolean);
+          const pal = its.length ? lookPalette(its) : [];
+          return (
+            <div key={l.id} style={{ border: `1px solid ${C.line}`, background: C.card }}>
+              <div onClick={() => openInStudio(l)}
+                style={{ position: "relative", paddingTop: "125%", background: C.paper, overflow: "hidden", cursor: "pointer" }}>
+                {l.placed.map((p, i) => {
+                  const it = itemsById[p.itemId];
+                  if (!it) return null;
+                  return <img key={i} src={it.img} alt="" style={{ position: "absolute", left: `${p.x}%`, top: `${p.y}%`, width: `${p.w}%`, transform: `rotate(${p.rot || 0}deg)`, zIndex: p.z }} />;
+                })}
+              </div>
+              <div style={{ padding: 10 }}>
+                <div style={{ display: "flex", gap: 4, marginBottom: 8 }}>
+                  {pal.map((hex) => (
+                    <div key={hex} title={colorName(hex)} style={{ width: 18, height: 18, background: hex, border: `1px solid ${C.line}` }} />
+                  ))}
+                  <div style={{ ...S.label, marginLeft: "auto", alignSelf: "center" }}>
+                    {pal.map(colorName).join(" · ")}
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  <Btn size="sm" onClick={() => keep(l)}>Сохранить</Btn>
+                  <Btn size="sm" variant="ghost" onClick={() => replaceOne(idx)}>Другой</Btn>
+                  <Btn size="sm" variant="ghost" onClick={() => openInStudio(l)}>Править</Btn>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </Section>
+  );
+}
+
 /* ─────────────────────────  СТУДИЯ  ───────────────────────── */
-function Studio({ items, itemsById, looks, saveLooks, weather, suggestedSeason, settings, saveSettings, say, markWorn }) {
+function Studio({ draft, items, itemsById, looks, saveLooks, weather, suggestedSeason, settings, saveSettings, say, markWorn }) {
   const [season, setSeason] = useState("any");
   const [occasion, setOccasion] = useState("daily");
   const [tpl, setTpl] = useState("classic");
@@ -766,6 +887,7 @@ function Studio({ items, itemsById, looks, saveLooks, weather, suggestedSeason, 
   const [manual, setManual] = useState(false);
 
   useEffect(() => { if (suggestedSeason && season === "any") setSeason(suggestedSeason); }, [suggestedSeason]);
+  useEffect(() => { if (draft) { setLook(draft); setSel(null); setManual(false); } }, [draft]);
 
   const gen = () => {
     const l = buildLook(items, { season, occasion, pinned, tpl });
