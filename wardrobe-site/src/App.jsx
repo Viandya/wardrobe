@@ -52,9 +52,6 @@ const OCCASIONS = [
   { id: "evening", ru: "Выход", form: 5 },
 ];
 
-/* Минимумы для отчёта о дырах в гардеробе */
-const MINIMUMS = { top: 5, bottom: 3, shoes: 2, outerwear: 1, bag: 1 };
-
 /* ─────────────────────────  ЦВЕТ  ───────────────────────── */
 function hexToRgb(h) {
   const n = parseInt(h.slice(1), 16);
@@ -109,6 +106,23 @@ function family(hex) {
   return "purple";
 }
 const isNeutralFam = (f) => ["light", "dark", "neutral", "brown"].includes(f);
+
+/* Порядок для раскладки по цветам: сначала светлые, потом нейтральные и
+   коричневые, дальше цветные по кругу, в конце тёмные. */
+function colorOrder(item) {
+  const hex = item.colors?.[0] || "#888888";
+  const [h, sat, l] = rgbToHsl(...hexToRgb(hex));
+  const f = family(hex);
+  if (f === "light") return [0, -l, 0];
+  if (f === "neutral") return [1, -l, 0];
+  if (f === "brown") return [2, h, -l];
+  if (f === "dark") return [4, -l, 0];
+  return [3, h, -sat];
+}
+const byColor = (a, b) => {
+  const x = colorOrder(a), y = colorOrder(b);
+  return x[0] - y[0] || x[1] - y[1] || x[2] - y[2];
+};
 
 /* Тёплые/холодные — чтобы не мешать холодный серый с тёплым бежем */
 function temp(hex) {
@@ -299,6 +313,34 @@ function layout(items, tpl = "classic") {
       z: idx,
     };
   });
+}
+
+/* Подгонка коллажа под холст: считаем общий габарит вещей и растягиваем
+   его к краям. Чем меньше вещей, тем больше воздуха вокруг — чтобы три
+   предмета не болтались в углах, а девять не задыхались. */
+const CANVAS_AR = 1.25;
+function fitPlaced(placed, itemsById, ar) {
+  if (!placed.length || !ar) return placed;
+  const boxes = placed.map((p) => {
+    const a = ar[p.itemId];
+    return a ? { p, h: (p.w * a) / CANVAS_AR } : null;
+  });
+  if (boxes.some((b) => !b)) return placed;
+
+  let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+  boxes.forEach(({ p, h }) => {
+    x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y);
+    x1 = Math.max(x1, p.x + p.w); y1 = Math.max(y1, p.y + h);
+  });
+  const bw = x1 - x0, bh = y1 - y0;
+  if (bw <= 0 || bh <= 0) return placed;
+
+  const n = placed.length;
+  const target = n <= 3 ? 0.80 : n <= 5 ? 0.88 : 0.94;
+  const k = Math.min((target * 100) / bw, (target * 100) / bh);
+  const dx = (100 - bw * k) / 2 - x0 * k;
+  const dy = (100 - bh * k) / 2 - y0 * k;
+  return placed.map((p) => ({ ...p, x: p.x * k + dx, y: p.y * k + dy, w: p.w * k }));
 }
 
 /* ─────────────────────────  ГЕНЕРАТОР  ───────────────────────── */
@@ -588,6 +630,8 @@ export default function App() {
   const [toast, setToast] = useState("");
 
   const uid = session?.user?.id;
+  const [ar, setAr] = useState({});
+  const arRef = useRef({});
   const itemsById = useMemo(() => Object.fromEntries(items.map((i) => [i.id, i])), [items]);
   const say = (t) => { setToast(t); setTimeout(() => setToast(""), 2600); };
 
@@ -607,6 +651,25 @@ export default function App() {
       setReady(true);
     })();
   }, [uid]);
+
+  /* пропорции картинок нужны, чтобы коллаж заполнял холст без пустот */
+  useEffect(() => {
+    const missing = items.filter((i) => !(i.id in arRef.current) && i.img);
+    if (!missing.length) return;
+    let alive = true;
+    Promise.all(missing.map((i) => new Promise((res) => {
+      const im = new Image();
+      im.crossOrigin = "anonymous";
+      im.onload = () => res([i.id, im.naturalHeight / im.naturalWidth]);
+      im.onerror = () => res([i.id, 1.2]);
+      im.src = i.img;
+    }))).then((pairs) => {
+      if (!alive) return;
+      arRef.current = { ...arRef.current, ...Object.fromEntries(pairs) };
+      setAr(arRef.current);
+    });
+    return () => { alive = false; };
+  }, [items]);
 
   /* ── вещи ── */
   const addItems = async (queue) => {
@@ -733,11 +796,11 @@ export default function App() {
 
       <main style={{ maxWidth: 1180, margin: "0 auto", padding: "22px 16px 90px" }}>
         {tab === "feed" && (
-          <Feed items={items} itemsById={itemsById} looks={looks} saveLooks={saveLooks}
+          <Feed items={items} itemsById={itemsById} ar={ar} looks={looks} saveLooks={saveLooks}
             markWorn={markWorn} say={say} openInStudio={openInStudio} suggestedSeason={suggestedSeason} />
         )}
         {tab === "studio" && (
-          <Studio draft={draft} items={items} itemsById={itemsById} looks={looks} saveLooks={saveLooks}
+          <Studio draft={draft} items={items} itemsById={itemsById} ar={ar} looks={looks} saveLooks={saveLooks}
             weather={weather} suggestedSeason={suggestedSeason} settings={settings}
             saveSettings={saveSettings} say={say} markWorn={markWorn} />
         )}
@@ -746,7 +809,7 @@ export default function App() {
             removeItem={removeItem} say={say} wipeAll={wipeAll} />
         )}
         {tab === "capsules" && (
-          <Capsules looks={looks} itemsById={itemsById} saveLooks={saveLooks} markWorn={markWorn} say={say} />
+          <Capsules looks={looks} itemsById={itemsById} ar={ar} saveLooks={saveLooks} markWorn={markWorn} say={say} />
         )}
         {tab === "insights" && <Insights items={items} looks={looks} />}
         {tab === "wish" && (
@@ -761,6 +824,16 @@ export default function App() {
         </div>
       )}
       <style>{`.hide-scroll::-webkit-scrollbar{display:none}
+        .studio-grid{display:grid;gap:14px;align-items:start}
+        @media (min-width: 860px){
+          .studio-grid{grid-template-columns:minmax(0,1fr) 300px;height:min(78vh,760px)}
+          .studio-grid > *{height:100%;overflow:auto}
+        }
+        @media (max-width: 859px){
+          .studio-grid > aside{max-height:340px}
+        }
+        .panel-scroll::-webkit-scrollbar{width:6px}
+        .panel-scroll::-webkit-scrollbar-thumb{background:#CFC5B2;border-radius:3px}
         input,select,textarea{font-family:inherit}
         *{box-sizing:border-box}
         body{margin:0}`}</style>
@@ -769,7 +842,7 @@ export default function App() {
 }
 
 /* ─────────────────────────  ПОДБОРКА  ───────────────────────── */
-function Feed({ items, itemsById, looks, saveLooks, markWorn, say, openInStudio, suggestedSeason }) {
+function Feed({ items, itemsById, ar, looks, saveLooks, markWorn, say, openInStudio, suggestedSeason }) {
   const [season, setSeason] = useState("any");
   const [occasion, setOccasion] = useState("daily");
   const [variants, setVariants] = useState([]);
@@ -789,10 +862,10 @@ function Feed({ items, itemsById, looks, saveLooks, markWorn, say, openInStudio,
         const it = itemsById[p.itemId];
         if (it && (it.category === "accessory" || it.category === "jewelry")) usedExtras.push(it.id);
       });
-      out.push(l);
+      out.push({ ...l, placed: fitPlaced(l.placed, itemsById, ar) });
     }
     return out;
-  }, [items, itemsById, season, occasion]);
+  }, [items, itemsById, ar, season, occasion]);
 
   /* подборка собирается сама при открытии и при смене условий */
   useEffect(() => {
@@ -805,7 +878,8 @@ function Feed({ items, itemsById, looks, saveLooks, markWorn, say, openInStudio,
   const replaceOne = (idx) => {
     const used = variants.flatMap((v) => v.placed.map((p) => p.itemId));
     const l = buildLook(items, { season, occasion, pinned: null, tpl: "classic", avoid: used });
-    if (l) setVariants((prev) => prev.map((v, i) => (i === idx ? l : v)));
+    if (l) setVariants((prev) => prev.map((v, i) =>
+      (i === idx ? { ...l, placed: fitPlaced(l.placed, itemsById, ar) } : v)));
   };
 
   const keep = async (look) => {
@@ -876,7 +950,7 @@ function Feed({ items, itemsById, looks, saveLooks, markWorn, say, openInStudio,
 }
 
 /* ─────────────────────────  СТУДИЯ  ───────────────────────── */
-function Studio({ draft, items, itemsById, looks, saveLooks, weather, suggestedSeason, settings, saveSettings, say, markWorn }) {
+function Studio({ draft, items, itemsById, ar, looks, saveLooks, weather, suggestedSeason, settings, saveSettings, say, markWorn }) {
   const [season, setSeason] = useState("any");
   const [occasion, setOccasion] = useState("daily");
   const [tpl, setTpl] = useState("classic");
@@ -892,7 +966,8 @@ function Studio({ draft, items, itemsById, looks, saveLooks, weather, suggestedS
   const gen = () => {
     const l = buildLook(items, { season, occasion, pinned, tpl });
     if (!l) return say("Не хватает вещей — добавь хотя бы верх, низ и обувь");
-    setLook(l); setSel(null); setManual(false);
+    setLook({ ...l, placed: fitPlaced(l.placed, itemsById, ar) });
+    setSel(null); setManual(false);
   };
 
   const genAll = () => {
@@ -908,7 +983,7 @@ function Studio({ draft, items, itemsById, looks, saveLooks, weather, suggestedS
       if (out.some((o) => o.placed.map((p) => p.itemId).sort().join("|") === key)) continue;
       l.placed.forEach((p) => covered.add(p.itemId));
       l.name = `Капсула ${out.length + 1}`;
-      out.push(l);
+      out.push({ ...l, placed: fitPlaced(l.placed, itemsById, ar) });
       if (!uncovered.length) break;
     }
     if (!out.length) return say("Сначала добавь вещи в гардероб");
@@ -1017,13 +1092,16 @@ function Studio({ draft, items, itemsById, looks, saveLooks, weather, suggestedS
       </Section>
 
       {look && (
-        <Canvas
-          look={look} setLook={setLook} itemsById={itemsById} items={items}
-          sel={sel} setSel={setSel} onSwap={swap} onAdd={addToLook}
-          manual={manual} onSave={save} onRegen={gen}
-          onExport={() => exportPng(look, itemsById, look.name || "Капсула")}
-          onWorn={() => markWorn(look)}
-        />
+        <div className="studio-grid">
+          <Canvas
+            look={look} setLook={setLook} itemsById={itemsById} items={items}
+            sel={sel} setSel={setSel} onSwap={swap}
+            manual={manual} onSave={save} onRegen={gen}
+            onExport={() => exportPng(look, itemsById, look.name || "Капсула")}
+            onWorn={() => markWorn(look)}
+          />
+          <ItemsPanel items={items} onPick={addToLook} pinned={pinned} onPin={setPinned} />
+        </div>
       )}
 
       {!look && items.length > 0 && (
@@ -1037,33 +1115,75 @@ function Studio({ draft, items, itemsById, looks, saveLooks, weather, suggestedS
         </div>
       )}
 
-      {/* закрепить вещь */}
-      {items.length > 0 && (
-        <div style={{ marginTop: 28 }}>
-          <div style={{ ...S.label, marginBottom: 8 }}>Закрепить вещь в следующем образе</div>
-          <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 6 }} className="hide-scroll">
-            {items.filter((i) => !i.isWish).map((i) => (
-              <button key={i.id} onClick={() => setPinned(pinned === i.id ? null : i.id)} style={{
-                flex: "0 0 auto", width: 72, height: 72, background: C.card, cursor: "pointer",
-                border: `1px solid ${pinned === i.id ? C.olive : C.line}`, borderRadius: 2, padding: 4,
-              }}>
-                <img src={i.img} alt="" style={{ width: "100%", height: "100%", objectFit: "contain" }} />
-              </button>
-            ))}
+      {!look && items.length > 0 && (
+        <div style={{ marginTop: 24 }}>
+          <div style={{ ...S.label, marginBottom: 8 }}>
+            Закрепить вещь — нажми, и следующий образ соберётся с ней
+          </div>
+          <div style={{ maxHeight: 320, display: "flex" }}>
+            <ItemsPanel items={items} title="Гардероб" pinned={pinned}
+              onPick={(i) => setPinned(pinned === i.id ? null : i.id)} />
           </div>
         </div>
       )}
+
     </>
   );
 }
 
+/* ─────────────────────────  ПАНЕЛЬ ВЕЩЕЙ  ───────────────────────── */
+const PANEL_ORDER = ["shoes", "top", "bottom", "outerwear", "dress", "bag", "accessory", "jewelry"];
+
+function ItemsPanel({ items, onPick, pinned, onPin, title = "Добавить вещь" }) {
+  const [q, setQ] = useState("");
+  const pool = items.filter((i) => !i.isWish)
+    .filter((i) => !q || (i.name || catRu(i.category)).toLowerCase().includes(q.toLowerCase()));
+
+  const groups = PANEL_ORDER
+    .map((c) => ({ cat: c, list: pool.filter((i) => i.category === c).sort(byColor) }))
+    .filter((g) => g.list.length);
+
+  return (
+    <aside style={{ border: `1px solid ${C.line}`, background: C.card, display: "flex", flexDirection: "column", minHeight: 0 }}>
+      <div style={{ padding: 12, borderBottom: `1px solid ${C.line}` }}>
+        <div style={{ ...S.label, marginBottom: 8 }}>{title}</div>
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="поиск"
+          style={{ width: "100%", border: `1px solid ${C.line}`, background: C.paper, padding: "7px 9px", fontSize: 12, borderRadius: 2, color: C.ink }} />
+      </div>
+      <div className="panel-scroll" style={{ overflowY: "auto", padding: 12, flex: 1 }}>
+        {groups.map((g) => (
+          <div key={g.cat} style={{ marginBottom: 16 }}>
+            <div style={{ ...S.label, fontSize: 9, marginBottom: 8, position: "sticky", top: -12, background: C.card, padding: "4px 0" }}>
+              {catRu(g.cat)} · {g.list.length}
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(58px,1fr))", gap: 6 }}>
+              {g.list.map((i) => (
+                <button key={i.id} title={i.name || catRu(i.category)}
+                  onClick={() => onPick(i)}
+                  onContextMenu={(e) => { if (onPin) { e.preventDefault(); onPin(i.id); } }}
+                  style={{
+                    aspectRatio: "1", background: C.paper, cursor: "pointer", padding: 3, borderRadius: 2,
+                    border: `1px solid ${pinned === i.id ? C.olive : C.line}`,
+                    boxShadow: `inset 0 -3px 0 ${i.colors?.[0] || C.line}`,
+                  }}>
+                  <img src={i.img} alt="" style={{ width: "100%", height: "100%", objectFit: "contain" }} />
+                </button>
+              ))}
+            </div>
+          </div>
+        ))}
+        {!groups.length && <div style={{ fontSize: 12, color: C.ink60 }}>Ничего не найдено</div>}
+      </div>
+    </aside>
+  );
+}
+
 /* ─────────────────────────  ХОЛСТ  ───────────────────────── */
-function Canvas({ look, setLook, itemsById, items, sel, setSel, onSwap, onAdd, manual, onSave, onRegen, onExport, onWorn }) {
+function Canvas({ look, setLook, itemsById, items, sel, setSel, onSwap, manual, onSave, onRegen, onExport, onWorn }) {
   const ref = useRef(null);
   const drag = useRef(null);
   const lookItems = look.placed.map((p) => itemsById[p.itemId]).filter(Boolean);
   const pal = lookItems.length ? lookPalette(lookItems) : [];
-  const [adding, setAdding] = useState(false);
 
   const onDown = (e, idx) => {
     e.preventDefault();
@@ -1100,7 +1220,7 @@ function Canvas({ look, setLook, itemsById, items, sel, setSel, onSwap, onAdd, m
   const del = () => { setLook({ ...look, placed: look.placed.filter((_, i) => i !== sel) }); setSel(null); };
 
   return (
-    <div style={{ border: `1px solid ${C.line}`, background: C.card, marginBottom: 24 }}>
+    <div style={{ border: `1px solid ${C.line}`, background: C.card, display: "flex", flexDirection: "column", minHeight: 0 }}>
       {/* палитра-плашки */}
       <div style={{ display: "flex", gap: 12, alignItems: "center", padding: 14, borderBottom: `1px solid ${C.line}`, flexWrap: "wrap" }}>
         {pal.map((hex) => (
@@ -1119,7 +1239,7 @@ function Canvas({ look, setLook, itemsById, items, sel, setSel, onSwap, onAdd, m
 
       {/* холст */}
       <div ref={ref} onClick={(e) => { if (e.target === ref.current) setSel(null); }}
-        style={{ position: "relative", width: "100%", paddingTop: "125%", background: C.paper, overflow: "hidden", touchAction: "none" }}>
+        style={{ position: "relative", width: "100%", maxWidth: 480, margin: "0 auto", paddingTop: "min(125%, 560px)", background: C.paper, overflow: "hidden", touchAction: "none" }}>
         {look.placed.map((p, idx) => {
           const it = itemsById[p.itemId];
           if (!it) return null;
@@ -1162,22 +1282,6 @@ function Canvas({ look, setLook, itemsById, items, sel, setSel, onSwap, onAdd, m
         </div>
       )}
 
-      {/* добавление вещей */}
-      <div style={{ padding: 14, borderTop: `1px solid ${C.line}` }}>
-        <button onClick={() => setAdding(!adding)} style={{ ...S.label, background: "none", border: "none", cursor: "pointer", padding: 0, color: C.ink }}>
-          {adding ? "Скрыть гардероб ▲" : "Добавить вещь из гардероба ▼"}
-        </button>
-        {adding && (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(64px,1fr))", gap: 6, marginTop: 12 }}>
-            {items.filter((i) => !i.isWish).map((i) => (
-              <button key={i.id} onClick={() => onAdd(i)} style={{ background: C.paper, border: `1px solid ${C.line}`, borderRadius: 2, padding: 4, cursor: "pointer", aspectRatio: "1" }}>
-                <img src={i.img} alt="" style={{ width: "100%", height: "100%", objectFit: "contain" }} />
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-
       <div style={{ padding: 14, borderTop: `1px solid ${C.line}`, display: "flex", gap: 8, flexWrap: "wrap" }}>
         <Btn onClick={onSave}>Сохранить капсулу</Btn>
         {!manual && <Btn variant="ghost" onClick={onRegen}>Ещё вариант</Btn>}
@@ -1193,6 +1297,7 @@ function Wardrobe({ items, addItems, updateItem, removeItem, say, wishMode = fal
   const [busy, setBusy] = useState(0);
   const [queue, setQueue] = useState([]);
   const [filter, setFilter] = useState("all");
+  const [sort, setSort] = useState("color");
   const [open, setOpen] = useState(null);
   const fileRef = useRef();
 
@@ -1233,7 +1338,16 @@ function Wardrobe({ items, addItems, updateItem, removeItem, say, wishMode = fal
   };
 
   const shown = items.filter((i) => (wishMode ? i.isWish : !i.isWish))
-    .filter((i) => filter === "all" || i.category === filter);
+    .filter((i) => filter === "all" || i.category === filter)
+    .sort((a, b) => {
+      if (sort === "color") return byColor(a, b);
+      if (sort === "wear") return (b.wear || 0) - (a.wear || 0);
+      if (sort === "cat") {
+        const ci = (x) => PANEL_ORDER.indexOf(x.category);
+        return ci(a) - ci(b) || byColor(a, b);
+      }
+      return 0;
+    });
 
   return (
     <>
@@ -1298,9 +1412,15 @@ function Wardrobe({ items, addItems, updateItem, removeItem, say, wishMode = fal
           </div>
         )}
 
-        <div style={{ display: "flex", gap: 6, overflowX: "auto", marginBottom: 14 }} className="hide-scroll">
+        <div style={{ display: "flex", gap: 6, overflowX: "auto", marginBottom: 10 }} className="hide-scroll">
           <Chip active={filter === "all"} onClick={() => setFilter("all")}>Все</Chip>
           {CATS.map((c) => <Chip key={c.id} active={filter === c.id} onClick={() => setFilter(c.id)}>{c.ru}</Chip>)}
+        </div>
+        <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 14, overflowX: "auto" }} className="hide-scroll">
+          <span style={{ ...S.label, fontSize: 9 }}>порядок</span>
+          <Chip active={sort === "color"} onClick={() => setSort("color")}>По цвету</Chip>
+          <Chip active={sort === "cat"} onClick={() => setSort("cat")}>По категориям</Chip>
+          <Chip active={sort === "wear"} onClick={() => setSort("wear")}>По носке</Chip>
         </div>
 
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(130px,1fr))", gap: 10 }}>
@@ -1393,7 +1513,7 @@ function Wishlist(props) {
 }
 
 /* ─────────────────────────  КАПСУЛЫ  ───────────────────────── */
-function Capsules({ looks, itemsById, saveLooks, markWorn, say }) {
+function Capsules({ looks, itemsById, ar, saveLooks, markWorn, say }) {
   const [open, setOpen] = useState(null);
   if (!looks.length)
     return <div style={{ border: `1px dashed ${C.line}`, padding: 40, textAlign: "center", color: C.ink60, fontSize: 13 }}>
@@ -1403,7 +1523,8 @@ function Capsules({ looks, itemsById, saveLooks, markWorn, say }) {
   return (
     <Section eyebrow="Сохранённое" title={`Капсулы · ${looks.length}`}>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(220px,1fr))", gap: 14 }}>
-        {looks.map((l) => {
+        {looks.map((raw) => {
+          const l = { ...raw, placed: fitPlaced(raw.placed, itemsById, ar) };
           const its = l.placed.map((p) => itemsById[p.itemId]).filter(Boolean);
           const pal = its.length ? lookPalette(its) : [];
           return (
@@ -1439,29 +1560,196 @@ function Capsules({ looks, itemsById, saveLooks, markWorn, say }) {
 }
 
 /* ─────────────────────────  АНАЛИТИКА  ───────────────────────── */
+const FAM_RU = { light: "Светлые", neutral: "Нейтральные", brown: "Коричневые", dark: "Тёмные",
+  red: "Красные", gold: "Жёлтые и охра", green: "Зелёные", blue: "Синие", purple: "Фиолетовые" };
+
+function Bar({ label, value, max, note, tone = C.olive }) {
+  const pct = max ? Math.round((value / max) * 100) : 0;
+  return (
+    <div style={{ marginBottom: 9 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 3 }}>
+        <span>{label}</span>
+        <span style={{ color: C.ink60 }}>{note ?? value}</span>
+      </div>
+      <div style={{ height: 6, background: C.paper2, borderRadius: 3, overflow: "hidden" }}>
+        <div style={{ width: `${pct}%`, height: "100%", background: tone }} />
+      </div>
+    </div>
+  );
+}
+
 function Insights({ items, looks }) {
   const real = items.filter((i) => !i.isWish);
-  const inLooks = new Set(looks.flatMap((l) => l.placed.map((p) => p.itemId)));
-  const dead = real.filter((i) => !(i.wear > 0) && !inLooks.has(i.id));
-  const counts = {};
-  real.forEach((i) => (counts[i.category] = (counts[i.category] || 0) + 1));
+  const stats = useMemo(() => {
+    const by = (c) => real.filter((i) => i.category === c);
+    const inSeason = (i, s) => !i.seasons?.length || i.seasons.includes(s);
 
-  const gaps = [];
-  Object.entries(MINIMUMS).forEach(([cat, min]) => {
-    const n = counts[cat] || 0;
-    if (n < min) gaps.push(`${catRu(cat)}: ${n} из ${min} — не хватает ${min - n}`);
+    /* сколько образов вообще складывается и сколько из них удачные */
+    const combos = {};
+    SEASONS.forEach((s) => {
+      const tops = [...by("top"), ...by("dress")].filter((i) => inSeason(i, s.id));
+      const bottoms = by("bottom").filter((i) => inSeason(i, s.id));
+      const shoes = by("shoes").filter((i) => inSeason(i, s.id));
+      combos[s.id] = { total: tops.length * bottoms.length * shoes.length, tops: tops.length, bottoms: bottoms.length, shoes: shoes.length };
+    });
+
+    /* доля сочетаний, которые проходят проверку по цвету и формальности */
+    const tops = [...by("top"), ...by("dress")], bottoms = by("bottom"), shoes = by("shoes");
+    let good = 0, tried = 0;
+    if (tops.length && bottoms.length && shoes.length) {
+      for (let n = 0; n < 400; n++) {
+        const trio = [tops[(Math.random() * tops.length) | 0], bottoms[(Math.random() * bottoms.length) | 0], shoes[(Math.random() * shoes.length) | 0]];
+        tried++;
+        if (scoreLook(trio) >= 85) good++;
+      }
+    }
+    const harmony = tried ? good / tried : 0;
+    const totalCombos = tops.length * bottoms.length * shoes.length;
+
+    /* палитра гардероба */
+    const fams = {};
+    real.forEach((i) => { const f = family(i.colors?.[0] || "#888"); fams[f] = (fams[f] || 0) + 1; });
+    const accent = real.filter((i) => !isNeutralFam(family(i.colors?.[0] || "#888"))).length;
+
+    /* покрытие сезонов по ключевым ролям */
+    const cover = SEASONS.map((s) => ({
+      s,
+      top: [...by("top"), ...by("dress")].filter((i) => inSeason(i, s.id)).length,
+      bottom: by("bottom").filter((i) => inSeason(i, s.id)).length,
+      shoes: by("shoes").filter((i) => inSeason(i, s.id)).length,
+      outer: by("outerwear").filter((i) => inSeason(i, s.id)).length,
+    }));
+
+    const inLooks = new Set(looks.flatMap((l) => l.placed.map((p) => p.itemId)));
+    const dead = real.filter((i) => !(i.wear > 0) && !inLooks.has(i.id));
+    const untagged = real.filter((i) => !i.seasons?.length);
+    const worn = real.filter((i) => i.wear > 0);
+    const avgForm = real.length ? real.reduce((a, b) => a + (b.formality || 2), 0) / real.length : 0;
+
+    return { by, combos, harmony, totalCombos, fams, accent, cover, dead, untagged, worn, avgForm, tops, bottoms, shoes };
+  }, [items, looks]);
+
+  const { by, combos, harmony, totalCombos, fams, accent, cover, dead, untagged, worn, avgForm } = stats;
+
+  /* содержательные выводы, а не просто «не хватает сумки» */
+  const advice = [];
+  const need = (cat, min, why) => {
+    const n = by(cat).length;
+    if (n < min) advice.push({ t: `${catRu(cat)}: ${n} из ${min}`, d: why });
+  };
+  need("top", 5, "Верх меняется чаще всего — на нём держится разнообразие образов.");
+  need("bottom", 3, "Каждый новый низ умножает количество образов, а не прибавляет.");
+  need("shoes", 2, "Одна пара обуви делает все образы похожими друг на друга.");
+  need("outerwear", 1, "Без верхней одежды половина года выпадает из гардероба.");
+
+  if (real.length >= 6) {
+    const share = accent / real.length;
+    if (share === 0) advice.push({ t: "Гардероб полностью нейтральный", d: "Всё сочетается со всем, но образы получаются плоскими. Одна цветная вещь оживит подборку." });
+    else if (share > 0.6) advice.push({ t: "Ярких вещей больше половины", d: "Не хватает нейтральной базы-связки: цветное плохо сочетается с цветным, и алгоритм отбраковывает такие пары." });
+  }
+  const lightBottoms = by("bottom").filter((i) => ["light", "neutral"].includes(family(i.colors?.[0] || "#888")));
+  if (by("bottom").length >= 2 && !lightBottoms.length)
+    advice.push({ t: "Все низы тёмные", d: "Светлые брюки или юбка дадут второй вариант основы и заметно расширят палитру." });
+
+  cover.forEach((c) => {
+    const holes = [];
+    if (!c.top) holes.push("верха");
+    if (!c.bottom) holes.push("низа");
+    if (!c.shoes) holes.push("обуви");
+    if (holes.length) advice.push({ t: `${c.s.ru}: нет ${holes.join(", ")}`, d: "Для этого сезона образ не соберётся вообще." });
+    else if (Math.min(c.top, c.bottom, c.shoes) === 1)
+      advice.push({ t: `${c.s.ru}: всё держится на одной вещи`, d: `Верхов ${c.top}, низов ${c.bottom}, пар обуви ${c.shoes} — образы будут повторяться.` });
   });
-  const lightBottoms = real.filter((i) => i.category === "bottom" && ["light", "neutral"].includes(family(i.colors[0])));
-  if (counts.bottom >= 2 && lightBottoms.length === 0) gaps.push("Все низы тёмные — светлые брюки или юбка расширят палитру");
-  const accentCount = real.filter((i) => !isNeutralFam(family(i.colors[0]))).length;
-  if (real.length >= 8 && accentCount === 0) gaps.push("Гардероб полностью нейтральный — одна цветная вещь оживит образы");
-  if (real.length >= 8 && accentCount / real.length > 0.6) gaps.push("Много ярких вещей и мало базы — не хватает нейтральных вещей-связок");
 
-  const top = [...real].sort((a, b) => (b.wear || 0) - (a.wear || 0)).slice(0, 6);
-  const days = [...new Set(looks.flatMap((l) => l.wornDates || []))].sort().slice(-14);
+  if (harmony > 0 && harmony < 0.35)
+    advice.push({ t: `Сочетается только ${Math.round(harmony * 100)}% комбинаций`, d: "Вещи плохо дружат между собой по цвету или сильно расходятся по формальности. Проверь, верно ли проставлена формальность в карточках." });
+  if (untagged.length)
+    advice.push({ t: `Без сезона: ${untagged.length}`, d: "Такие вещи попадают в любой образ, включая неподходящие по погоде. Проставь сезоны в карточках." });
+
+  const days = [...new Set(looks.flatMap((l) => l.wornDates || []))].sort().slice(-21);
+  const topWorn = [...real].sort((a, b) => (b.wear || 0) - (a.wear || 0)).slice(0, 6);
+  const maxCat = Math.max(1, ...CATS.map((c) => by(c.id).length));
+  const maxFam = Math.max(1, ...Object.values(fams));
+
+  if (!real.length)
+    return <div style={{ border: `1px dashed ${C.line}`, padding: 40, textAlign: "center", color: C.ink60, fontSize: 13 }}>
+      Гардероб пуст — считать пока нечего.
+    </div>;
+
+  const Num = ({ v, t }) => (
+    <div style={{ border: `1px solid ${C.line}`, background: C.card, padding: 14 }}>
+      <div style={{ ...S.serif, fontSize: 28, lineHeight: 1.1 }}>{v}</div>
+      <div style={{ ...S.label, fontSize: 9, marginTop: 6 }}>{t}</div>
+    </div>
+  );
 
   return (
     <>
+      <Section eyebrow="Коротко" title="Гардероб в цифрах">
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 10 }}>
+          <Num v={real.length} t="вещей" />
+          <Num v={totalCombos} t="возможных образов" />
+          <Num v={Math.round(harmony * totalCombos)} t="из них удачных" />
+          <Num v={`${Math.round((worn.length / real.length) * 100)}%`} t="вещей в деле" />
+          <Num v={avgForm.toFixed(1)} t="средняя формальность" />
+        </div>
+        <div style={{ fontSize: 12, color: C.ink60, marginTop: 12, lineHeight: 1.6 }}>
+          «Возможных образов» — все сочетания верха, низа и обуви. «Удачных» — те, что проходят проверку
+          по цвету и формальности: сейчас это {Math.round(harmony * 100)}% сочетаний.
+          Одна новая вещь-основа даёт не плюс один образ, а умножает их количество.
+        </div>
+      </Section>
+
+      <Section eyebrow="Что нужно докупить" title={`Выводы · ${advice.length}`}>
+        {advice.length ? (
+          <div style={{ display: "grid", gap: 8 }}>
+            {advice.map((g, i) => (
+              <div key={i} style={{ border: `1px solid ${C.line}`, borderLeft: `3px solid ${C.rust}`, background: C.card, padding: 12 }}>
+                <div style={{ ...S.serif, fontSize: 15 }}>{g.t}</div>
+                <div style={{ fontSize: 12, color: C.ink60, marginTop: 4, lineHeight: 1.5 }}>{g.d}</div>
+              </div>
+            ))}
+          </div>
+        ) : <div style={{ fontSize: 13, color: C.ink60 }}>Дыр не видно — база собрана, сезоны закрыты, цвета сбалансированы.</div>}
+      </Section>
+
+      <Section eyebrow="Состав" title="По категориям и цветам">
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(260px,1fr))", gap: 24 }}>
+          <div>
+            <div style={{ ...S.label, marginBottom: 10 }}>Категории</div>
+            {CATS.filter((c) => by(c.id).length).map((c) => (
+              <Bar key={c.id} label={c.ru} value={by(c.id).length} max={maxCat} />
+            ))}
+          </div>
+          <div>
+            <div style={{ ...S.label, marginBottom: 10 }}>Палитра</div>
+            {Object.entries(fams).sort((a, b) => b[1] - a[1]).map(([f, n]) => (
+              <Bar key={f} label={FAM_RU[f] || f} value={n} max={maxFam}
+                tone={isNeutralFam(f) ? C.chestnut : C.olive} />
+            ))}
+            <div style={{ fontSize: 12, color: C.ink60, marginTop: 8, lineHeight: 1.5 }}>
+              Нейтральных {real.length - accent}, акцентных {accent}. Рабочая пропорция — примерно двое нейтральных на одну цветную.
+            </div>
+          </div>
+        </div>
+      </Section>
+
+      <Section eyebrow="По сезонам" title="Что можно собрать">
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(200px,1fr))", gap: 14 }}>
+          {cover.map((c) => (
+            <div key={c.s.id} style={{ border: `1px solid ${C.line}`, background: C.card, padding: 14 }}>
+              <div style={{ ...S.serif, fontSize: 17, marginBottom: 2 }}>{c.s.ru}</div>
+              <div style={{ ...S.label, fontSize: 9, marginBottom: 10 }}>
+                образов: {combos[c.s.id].total}
+              </div>
+              <div style={{ fontSize: 12, lineHeight: 1.9, color: C.ink60 }}>
+                верх — {c.top}<br />низ — {c.bottom}<br />обувь — {c.shoes}<br />верхняя одежда — {c.outer}
+              </div>
+            </div>
+          ))}
+        </div>
+      </Section>
+
       <Section eyebrow="Что носится" title="Календарь и счётчик">
         {days.length ? (
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 18 }}>
@@ -1471,41 +1759,40 @@ function Insights({ items, looks }) {
               </div>
             ))}
           </div>
-        ) : <div style={{ fontSize: 13, color: C.ink60, marginBottom: 18 }}>Отмечай «Носила» — здесь появится история.</div>}
-
+        ) : <div style={{ fontSize: 13, color: C.ink60, marginBottom: 18 }}>Отмечай «Носила» — здесь появится история, а выводы станут точнее.</div>}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(120px,1fr))", gap: 10 }}>
-          {top.map((i) => (
+          {topWorn.map((i) => (
             <div key={i.id} style={{ border: `1px solid ${C.line}`, background: C.card, padding: 8 }}>
               <div style={{ aspectRatio: "1", display: "grid", placeItems: "center" }}>
                 <img src={i.img} alt="" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} />
               </div>
               <div style={{ ...S.label, marginTop: 6 }}>носила {i.wear || 0}</div>
-              {i.lastWorn && <div style={{ fontSize: 10, color: C.ink60 }}>последний раз {i.lastWorn}</div>}
+              {i.lastWorn && <div style={{ fontSize: 10, color: C.ink60 }}>{i.lastWorn}</div>}
             </div>
           ))}
         </div>
       </Section>
 
-      <Section eyebrow="Дыры в гардеробе" title="Чего не хватает">
-        {gaps.length ? (
-          <ul style={{ margin: 0, paddingLeft: 18, fontSize: 14, lineHeight: 1.8 }}>
-            {gaps.map((g, i) => <li key={i}>{g}</li>)}
-          </ul>
-        ) : <div style={{ fontSize: 13, color: C.ink60 }}>База закрыта — базовых категорий хватает.</div>}
-      </Section>
-
       <Section eyebrow="Мёртвый груз" title={`Не используется · ${dead.length}`}>
         {dead.length ? (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(110px,1fr))", gap: 10 }}>
-            {dead.map((i) => (
-              <div key={i.id} style={{ border: `1px solid ${C.line}`, background: C.card, padding: 8, opacity: 0.75 }}>
-                <div style={{ aspectRatio: "1", display: "grid", placeItems: "center" }}>
-                  <img src={i.img} alt="" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} />
+          <>
+            <div style={{ fontSize: 12, color: C.ink60, marginBottom: 12, lineHeight: 1.5 }}>
+              Эти вещи ни разу не попали ни в один сохранённый образ. Часто причина не в самой вещи,
+              а в том, что к ней нечего надеть — посмотри на её цвет и формальность.
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(110px,1fr))", gap: 10 }}>
+              {dead.sort(byColor).map((i) => (
+                <div key={i.id} style={{ border: `1px solid ${C.line}`, background: C.card, padding: 8, opacity: 0.8 }}>
+                  <div style={{ aspectRatio: "1", display: "grid", placeItems: "center" }}>
+                    <img src={i.img} alt="" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} />
+                  </div>
+                  <div style={{ ...S.label, marginTop: 6, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                    {i.name || catRu(i.category)}
+                  </div>
                 </div>
-                <div style={{ ...S.label, marginTop: 6 }}>{i.name || catRu(i.category)}</div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          </>
         ) : <div style={{ fontSize: 13, color: C.ink60 }}>Все вещи в деле.</div>}
       </Section>
     </>
