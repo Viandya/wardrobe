@@ -118,7 +118,7 @@ function temp(hex) {
 }
 
 /* ─────────────────────────  ОБРАБОТКА ФОТО  ───────────────────────── */
-async function processFile(file, maxSize = 460) {
+async function processFile(file, tol = 30, maxSize = 460) {
   const url = URL.createObjectURL(file);
   const img = await new Promise((res, rej) => {
     const i = new Image();
@@ -132,37 +132,49 @@ async function processFile(file, maxSize = 460) {
   ctx.drawImage(img, 0, 0, w, h);
   URL.revokeObjectURL(url);
   const data = ctx.getImageData(0, 0, w, h);
-  cutBackground(data, w, h);
+  if (tol > 0) cutBackground(data, w, h, tol);
   ctx.putImageData(data, 0, 0);
-  const cropped = trim(cv);
+  const cropped = tol > 0 ? trim(cv) : cv;
   const blob = await new Promise((r) => cropped.toBlob(r, "image/webp", 0.82));
   return { blob, dataUrl: cropped.toDataURL("image/webp", 0.82), colors: pickColors(cropped) };
 }
 
-/* Заливка от краёв: убираем только фон, белую рубашку внутри не трогаем */
-function cutBackground(imgData, w, h) {
+/* Заливка от краёв. Цвет фона берём с рамки кадра, а не считаем белым,
+   и шагаем только между соседями похожего цвета — тогда край вещи
+   останавливает заливку и белая рубашка на светлой стене уцелеет. */
+function cutBackground(imgData, w, h, tol = 30) {
   const d = imgData.data;
+  const px = [];
+  const grab = (i) => px.push([d[i * 4], d[i * 4 + 1], d[i * 4 + 2]]);
+  for (let x = 0; x < w; x += 2) { grab(x); grab((h - 1) * w + x); }
+  for (let y = 0; y < h; y += 2) { grab(y * w); grab(y * w + w - 1); }
+  const med = (k) => { const a = px.map((p) => p[k]).sort((m, n) => m - n); return a[a.length >> 1]; };
+  const bg = [med(0), med(1), med(2)];
+
+  const toBg = (i) => Math.abs(d[i * 4] - bg[0]) + Math.abs(d[i * 4 + 1] - bg[1]) + Math.abs(d[i * 4 + 2] - bg[2]);
+  const between = (i, j) =>
+    Math.abs(d[i * 4] - d[j * 4]) + Math.abs(d[i * 4 + 1] - d[j * 4 + 1]) + Math.abs(d[i * 4 + 2] - d[j * 4 + 2]);
+
   const seen = new Uint8Array(w * h);
-  const stack = [];
-  const bright = (i) => {
-    const r = d[i * 4], g = d[i * 4 + 1], b = d[i * 4 + 2];
-    const mn = Math.min(r, g, b), mx = Math.max(r, g, b);
-    return mn > 226 && mx - mn < 22;
-  };
-  for (let x = 0; x < w; x++) { stack.push(x); stack.push((h - 1) * w + x); }
-  for (let y = 0; y < h; y++) { stack.push(y * w); stack.push(y * w + w - 1); }
-  while (stack.length) {
-    const i = stack.pop();
-    if (i < 0 || i >= w * h || seen[i]) continue;
-    seen[i] = 1;
-    if (!bright(i)) continue;
+  const queue = new Int32Array(w * h);
+  let head = 0, tail = 0;
+  const seed = (i) => { if (!seen[i] && toBg(i) < tol * 3) { seen[i] = 1; queue[tail++] = i; } };
+  for (let x = 0; x < w; x++) { seed(x); seed((h - 1) * w + x); }
+  for (let y = 0; y < h; y++) { seed(y * w); seed(y * w + w - 1); }
+
+  while (head < tail) {
+    const i = queue[head++];
     d[i * 4 + 3] = 0;
     const x = i % w, y = (i / w) | 0;
-    if (x > 0) stack.push(i - 1);
-    if (x < w - 1) stack.push(i + 1);
-    if (y > 0) stack.push(i - w);
-    if (y < h - 1) stack.push(i + w);
+    const step = (j) => {
+      if (!seen[j] && between(i, j) < tol && toBg(j) < tol * 4) { seen[j] = 1; queue[tail++] = j; }
+    };
+    if (x > 0) step(i - 1);
+    if (x < w - 1) step(i + 1);
+    if (y > 0) step(i - w);
+    if (y < h - 1) step(i + w);
   }
+
   /* мягкий край */
   for (let y = 1; y < h - 1; y++) {
     for (let x = 1; x < w - 1; x++) {
@@ -1069,10 +1081,10 @@ function Wardrobe({ items, addItems, updateItem, removeItem, say, wishMode = fal
     const out = [];
     for (const f of arr) {
       try {
-        const { blob, dataUrl, colors } = await processFile(f);
+        const { blob, dataUrl, colors } = await processFile(f, 25);
         out.push({
           id: "it_" + Date.now() + "_" + Math.floor(Math.random() * 1e5),
-          name: "", category: "top", img: dataUrl, blob, colors,
+          name: "", category: "top", img: dataUrl, blob, colors, file: f, tol: 25,
           seasons: [], formality: 2, fav: false, wear: 0, lastWorn: null,
           isWish: wishMode,
         });
@@ -1083,7 +1095,20 @@ function Wardrobe({ items, addItems, updateItem, removeItem, say, wishMode = fal
     setBusy(0);
   };
 
-  const confirmQueue = async () => { await addItems(queue); setQueue([]); };
+  const confirmQueue = async () => {
+    await addItems(queue.map(({ file, tol, ...it }) => it));
+    setQueue([]);
+  };
+
+  /* пересчитать вырезание с другой силой — для белого на белом */
+  const retune = async (idx, tol) => {
+    const q = queue[idx];
+    setQueue((prev) => prev.map((x, j) => (j === idx ? { ...x, tol } : x)));
+    try {
+      const { blob, dataUrl, colors } = await processFile(q.file, tol);
+      setQueue((prev) => prev.map((x, j) => (j === idx ? { ...x, blob, img: dataUrl, colors } : x)));
+    } catch (e) { console.error(e); }
+  };
 
   const shown = items.filter((i) => (wishMode ? i.isWish : !i.isWish))
     .filter((i) => filter === "all" || i.category === filter);
@@ -1132,6 +1157,14 @@ function Wardrobe({ items, addItems, updateItem, removeItem, say, wishMode = fal
                   </div>
                   <div style={{ display: "flex", gap: 4, marginTop: 8 }}>
                     {q.colors.map((c) => <div key={c} style={{ width: 16, height: 16, background: c, border: `1px solid ${C.line}` }} />)}
+                  </div>
+                  <label style={{ display: "block", fontSize: 10, color: C.ink60, marginTop: 8 }}>
+                    вырезание фона: {q.tol === 0 ? "выключено" : q.tol}
+                    <input type="range" min="0" max="70" step="5" value={q.tol}
+                      onChange={(e) => retune(i, +e.target.value)} style={{ width: "100%" }} />
+                  </label>
+                  <div style={{ fontSize: 10, color: C.ink60, lineHeight: 1.4 }}>
+                    Съело часть вещи — уменьшай. Остался фон — увеличивай. 0 оставит фото как есть.
                   </div>
                 </div>
               ))}
