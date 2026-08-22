@@ -290,51 +290,55 @@ const CANVAS_AR = 1.25;
    подобными — тогда пара обуви сверху и пара сбоку выглядят одинаково.
    Рамка не даёт длинному вылезти за поле: брюки упрутся в высоту и
    станут узкими, шорты — в ширину и останутся короткими. */
-/* Размер вещи задаётся ШИРИНОЙ — глаз считывает величину одежды именно по
-   ней. Высота получается из пропорций фотографии, но ограничена сверху,
-   чтобы длинное платье не занимало весь холст. Небольшая поправка на
-   вытянутость: узкая длинная вещь при равной ширине кажется крупнее,
-   поэтому её слегка уменьшаем. */
+/* Размер вещи считается по ПЛОЩАДИ САМОЙ ТКАНИ, а не по габаритам кадра.
+   Узкое боди заполняет свой прямоугольник на 59%, а топ-майка на 93% —
+   при равной ширине у топа в полтора раза больше видимой ткани, поэтому
+   он и кажется огромным. Меряем долю непрозрачных пикселей и приводим
+   площадь вещи к общей для категории. Габариты ограничены сверху, чтобы
+   длинное платье не заняло весь холст. */
 const SIZE = {
-  outerwear: { w: 33, h: 48 },
-  blazer:    { w: 33, h: 48 },
-  dress:     { w: 30, h: 60 },
-  shirt:     { w: 32, h: 42 },
-  top:       { w: 29, h: 40 },
-  pants:     { w: 27, h: 54 },
-  skirt:     { w: 27, h: 50 },
-  shorts:    { w: 27, h: 34 },
-  sweats:    { w: 27, h: 54 },
-  bottom:    { w: 27, h: 54 },
-  shoes:     { w: 26, h: 20 },
-  bag:       { w: 22, h: 24 },
-  belt:      { w: 16, h: 14 },
-  accessory: { w: 16, h: 16 },
-  jewelry:   { w: 13, h: 13 },
+  outerwear: { area: 620, w: 36, h: 50 },
+  blazer:    { area: 600, w: 36, h: 48 },
+  dress:     { area: 700, w: 33, h: 62 },
+  shirt:     { area: 540, w: 35, h: 44 },
+  top:       { area: 470, w: 32, h: 40 },
+  pants:     { area: 620, w: 30, h: 55 },
+  skirt:     { area: 580, w: 30, h: 52 },
+  shorts:    { area: 420, w: 30, h: 36 },
+  sweats:    { area: 620, w: 30, h: 55 },
+  bottom:    { area: 620, w: 30, h: 55 },
+  shoes:     { area: 175, w: 28, h: 22 },
+  bag:       { area: 210, w: 24, h: 26 },
+  belt:      { area: 70,  w: 17, h: 15 },
+  accessory: { area: 80,  w: 18, h: 17 },
+  jewelry:   { area: 45,  w: 15, h: 14 },
 };
-const WIDTH_MAX = 33;
+const AREA_MAX = 700;
 
-/* поправка на вытянутость: чем длиннее вещь, тем чуть уже она рисуется */
-const slim = (a) => Math.pow(1.15 / Math.max(a, 0.35), 0.16);
+/* мера вещи: пропорция кадра и доля ткани в нём */
+const aspOf = (m) => (typeof m === "number" ? m : m?.a) || 1.2;
+const covOf = (m) => (typeof m === "number" ? 0.7 : m?.cov) || 0.7;
 
-function sizeIn(cat, aspect) {
+function sizeIn(cat, m) {
   const box = SIZE[cat] || SIZE.accessory;
-  const a = aspect || 1.2;
-  let w = box.w * Math.min(1.12, Math.max(0.82, slim(a)));
+  const a = aspOf(m), cov = Math.max(0.25, covOf(m));
+  let w = Math.sqrt((box.area * CANVAS_AR) / (a * cov));
   let h = (w * a) / CANVAS_AR;
+  if (w > box.w) { w = box.w; h = (w * a) / CANVAS_AR; }
   if (h > box.h) { h = box.h; w = (h * CANVAS_AR) / a; }
   return { w, h, box };
 }
 
 /* Доля площади миниатюры: рубашка крупнее футболки, ремень мельче брюк —
    ровно так же, как в коллаже. Иначе в сетке всё выглядит вразнобой. */
-function thumbSize(cat, aspect, fill = 0.92) {
+function thumbSize(cat, m, fill = 0.9) {
   const box = SIZE[cat] || SIZE.accessory;
-  const a = aspect || 1.2;
-  let w = (box.w / WIDTH_MAX) * 100 * fill * Math.min(1.12, Math.max(0.82, slim(a)));
+  const a = aspOf(m), cov = Math.max(0.25, covOf(m));
+  const rel = (box.area / AREA_MAX) * fill;
+  let w = Math.sqrt(rel / (a * cov)) * 100;
   let h = w * a;
-  if (h > 96) { h = 96; w = h / a; }
-  if (w > 96) { w = 96; h = w * a; }
+  if (h > 97) { h = 97; w = h / a; }
+  if (w > 97) { w = 97; h = w * a; }
   return { w, h };
 }
 
@@ -367,78 +371,61 @@ function layout(items, tpl = "classic", ar = {}) {
     .sort((a, b) => order(SIDE, a) - order(SIDE, b));
 
   const out = [];
-  const leftW = side.length ? 66 : 100;
+  const leftW = side.length ? 70 : 100;
+  const gap = 2;
 
-  /* верхние вещи в ряд с небольшим нахлёстом */
-  const sizes = uppers.map((i) => sizeIn(i.category, ar[i.id]));
-  const overlap = -2;   /* зазор, а не нахлёст: обе вещи должны читаться */
-  const rowW = sizes.reduce((sum, s) => sum + s.w, 0) - overlap * Math.max(0, uppers.length - 1);
-  const k = Math.min(1, (leftW - 6) / Math.max(rowW, 1));
-  let x = (leftW - rowW * k) / 2;
-  let bottomOfRow = 4;
-  uppers.forEach((it, i) => {
-    const w = sizes[i].w * k, h = sizes[i].h * k;
-    out.push({ itemId: it.id, x, y: 4, w, rot: 0, z: i });
-    bottomOfRow = Math.max(bottomOfRow, 4 + h);
-    x += w - overlap * k;
+  /* Верхние вещи рядами по три. Нахлёст небольшой и только краями —
+     перекрывать вещь целиком нельзя, но соприкасаться можно. */
+  let y = 3;
+  const rows = [];
+  for (let i = 0; i < uppers.length; i += 3) rows.push(uppers.slice(i, i + 3));
+  rows.forEach((row) => {
+    const sizes = row.map((i) => sizeIn(i.category, ar[i.id]));
+    const rowW = sizes.reduce((sum, s) => sum + s.w, 0) + gap * (row.length - 1);
+    const k = Math.min(1, (leftW - 4) / Math.max(rowW, 1));
+    let x = (leftW - rowW * k) / 2;
+    let rowH = 0;
+    row.forEach((it, i) => {
+      const w = sizes[i].w * k, h = sizes[i].h * k;
+      out.push({ itemId: it.id, x, y, w, rot: 0, z: out.length });
+      rowH = Math.max(rowH, h);
+      x += w * 1 + gap * k;
+    });
+    y += rowH + gap;
   });
 
-  /* низ под верхом, по центру левой части */
-  let y = uppers.length ? bottomOfRow - 4 : 6;
-  bottoms.forEach((it, i) => {
-    const s = sizeIn(it.category, ar[it.id]);
-    const kk = Math.min(1, (leftW - 10) / s.w);
-    const w = s.w * kk, h = s.h * kk;
-    out.push({ itemId: it.id, x: (leftW - w) / 2, y, w, rot: 0, z: 10 + i });
-    y += h + 2;
+  /* низ под верхом */
+  bottoms.forEach((it) => {
+    const s0 = sizeIn(it.category, ar[it.id]);
+    const k = Math.min(1, (leftW - 6) / s0.w);
+    const w = s0.w * k, h = s0.h * k;
+    out.push({ itemId: it.id, x: (leftW - w) / 2, y, w, rot: 0, z: out.length });
+    y += h + gap;
   });
+  const clothesBottom = y - gap;
 
-  /* Колонка справа: мелочи сверху вниз, обувь всегда прижата к низу —
-     но не к самому краю, а на уровне низа одежды. */
+  /* Справа колонка мелочей сверху вниз; обувь — последняя, на уровне
+     низа одежды, чтобы не улетала в самый низ пустого холста. */
   if (side.length) {
     const colW = 100 - leftW;
     const shoes = side.filter((i) => i.category === "shoes");
     const small = side.filter((i) => i.category !== "shoes");
-    const gap = 3;
-    const place = (it, y, i) => {
-      const raw = sizeIn(it.category, ar[it.id]);
-      const kk = Math.min(1, (colW - 4) / raw.w);
-      const w = raw.w * kk, h = raw.h * kk;
-      out.push({ itemId: it.id, x: leftW + (colW - w) / 2, y, w, rot: 0, z: 20 + i });
+    const put = (it, yy) => {
+      const s0 = sizeIn(it.category, ar[it.id]);
+      const k = Math.min(1, (colW - 3) / s0.w);
+      const w = s0.w * k, h = s0.h * k;
+      out.push({ itemId: it.id, x: leftW + (colW - w) / 2, y: yy, w, rot: 0, z: out.length });
       return h;
     };
-
-    let shoesH = 0;
-    if (shoes.length) {
-      const raw = sizeIn("shoes", ar[shoes[0].id]);
-      shoesH = raw.h * Math.min(1, (colW - 4) / raw.w);
-    }
-    const room = 92 - (shoes.length ? shoesH + 6 : 0);
-
-    let sy = 4;
-    small.forEach((it, i) => { sy += place(it, sy, i) + gap; });
-    if (sy > room + 4) {   /* мелочей много — поджимаем их кверху */
-      const shift = sy - room - 4;
-      out.filter((p) => small.some((m) => m.id === p.itemId))
-         .forEach((p) => { p.y = Math.max(2, p.y - shift); });
-    }
-    shoes.forEach((it, i) => place(it, 92 - shoesH, 30 + i));
-  }
-
-  /* Композиция выходит широкой и низкой, а холст вытянутый. Разводим вещи
-     по вертикали от центра, пока пропорция не приблизится к холсту, —
-     размеры при этом не меняются, просто уходит пустота снизу. */
-  const hOf = (p) => (p.w * (ar[p.itemId] || 1.2)) / CANVAS_AR;
-  const top = Math.min(...out.map((p) => p.y));
-  const bot = Math.max(...out.map((p) => p.y + hOf(p)));
-  const left = Math.min(...out.map((p) => p.x));
-  const right = Math.max(...out.map((p) => p.x + p.w));
-  const bw = right - left, bh = bot - top;
-  const want = 1.16;
-  if (bh > 0 && bh / bw < want) {
-    const f = Math.min(1.35, (want * bw) / bh);
-    const cy = (top + bot) / 2;
-    out.forEach((p) => { p.y = cy + (p.y + hOf(p) / 2 - cy) * f - hOf(p) / 2; });
+    let sy = 3;
+    small.forEach((it) => { sy += put(it, sy) + gap; });
+    shoes.forEach((it) => {
+      const s0 = sizeIn("shoes", ar[it.id]);
+      const k = Math.min(1, (colW - 3) / s0.w);
+      const h = s0.h * k;
+      const yy = Math.max(sy, clothesBottom - h);
+      put(it, yy);
+    });
   }
   return out;
 }
@@ -449,8 +436,8 @@ function layout(items, tpl = "classic", ar = {}) {
 function fitPlaced(placed, itemsById, ar) {
   if (!placed.length || !ar) return placed;
   const boxes = placed.map((p) => {
-    const a = ar[p.itemId];
-    return a ? { p, h: (p.w * a) / CANVAS_AR } : null;
+    const m = ar[p.itemId];
+    return m ? { p, h: (p.w * aspOf(m)) / CANVAS_AR } : null;
   });
   if (boxes.some((b) => !b)) return placed;
 
@@ -956,11 +943,25 @@ export default function App() {
     const missing = items.filter((i) => !(i.id in arRef.current) && i.img);
     if (!missing.length) return;
     let alive = true;
+    const measure = (im) => {
+      const a = im.naturalHeight / im.naturalWidth;
+      try {
+        const n = 56;
+        const cv = document.createElement("canvas");
+        cv.width = n; cv.height = Math.max(1, Math.round(n * a));
+        const cx = cv.getContext("2d", { willReadFrequently: true });
+        cx.drawImage(im, 0, 0, cv.width, cv.height);
+        const d = cx.getImageData(0, 0, cv.width, cv.height).data;
+        let on = 0;
+        for (let k = 3; k < d.length; k += 4) if (d[k] > 40) on++;
+        return { a, cov: Math.max(0.2, on / (cv.width * cv.height)) };
+      } catch { return { a, cov: 0.7 }; }
+    };
     Promise.all(missing.map((i) => new Promise((res) => {
       const im = new Image();
       im.crossOrigin = "anonymous";
-      im.onload = () => res([i.id, im.naturalHeight / im.naturalWidth]);
-      im.onerror = () => res([i.id, 1.2]);
+      im.onload = () => res([i.id, measure(im)]);
+      im.onerror = () => res([i.id, { a: 1.2, cov: 0.7 }]);
       im.src = i.img;
     }))).then((pairs) => {
       if (!alive) return;
@@ -1587,6 +1588,84 @@ function Canvas({ look, setLook, itemsById, items, sel, setSel, onSwap, manual, 
 }
 
 /* ─────────────────────────  ГАРДЕРОБ  ───────────────────────── */
+/* Карточка вещи открывается модальным окном по центру: привязанная к
+   плитке панель всегда упиралась в край сетки и вылезала вправо. */
+function ItemDialog({ item, ar, onChange, onRemove, onClose, wishMode }) {
+  useEffect(() => {
+    const esc = (e) => e.key === "Escape" && onClose();
+    document.addEventListener("keydown", esc);
+    return () => document.removeEventListener("keydown", esc);
+  }, [onClose]);
+  if (!item) return null;
+  const i = item;
+
+  return (
+    <>
+      <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(28,30,34,.34)", zIndex: 80 }} />
+      <div role="dialog" style={{
+        position: "fixed", zIndex: 81, top: "50%", left: "50%", transform: "translate(-50%,-50%)",
+        width: "min(420px, 92vw)", maxHeight: "88vh", overflowY: "auto",
+        background: C.card, border: `1px solid ${C.line}`, boxShadow: "0 18px 48px rgba(28,30,34,.20)",
+        padding: 20, fontFamily: FONT,
+      }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+          <div style={{ minWidth: 0 }}>
+            <div style={S.label}>вещь</div>
+            <input value={i.name} placeholder={catRu(i.category)}
+              onChange={(e) => onChange({ name: e.target.value })}
+              style={{ ...S.display, fontSize: 18, marginTop: 6, width: "100%", border: "none",
+                       borderBottom: `1px solid ${C.line}`, background: "transparent", color: C.ink, padding: "2px 0" }} />
+          </div>
+          <button onClick={onClose} aria-label="Закрыть"
+            style={{ background: "none", border: "none", cursor: "pointer", fontSize: 22, lineHeight: 1, color: C.ink60 }}>×</button>
+        </div>
+
+        <div style={{ background: C.paper, margin: "16px 0", padding: 10 }}>
+          <Thumb item={i} ar={ar} h={190} />
+        </div>
+
+        <div style={{ ...S.label, marginBottom: 6 }}>категория</div>
+        <select value={i.category} onChange={(e) => onChange({ category: e.target.value })}
+          style={{ width: "100%", padding: 9, fontSize: 13, border: `1px solid ${C.line}`, background: C.paper, borderRadius: 2, color: C.ink }}>
+          {CATS.map((c) => <option key={c.id} value={c.id}>{c.ru}</option>)}
+        </select>
+
+        <div style={{ ...S.label, margin: "16px 0 6px" }}>сезон</div>
+        <div style={{ display: "flex", gap: 6 }}>
+          {SEASONS.map((s) => {
+            const on = i.seasons?.includes(s.id);
+            return (
+              <button key={s.id}
+                onClick={() => onChange({ seasons: on ? i.seasons.filter((v) => v !== s.id) : [...(i.seasons || []), s.id] })}
+                style={{ ...S.label, fontSize: 9, flex: 1, padding: "9px 4px", cursor: "pointer", borderRadius: 2,
+                         border: `1px solid ${on ? C.olive : C.line}`, background: on ? C.olive : "transparent",
+                         color: on ? "#fff" : C.ink60 }}>{s.ru}</button>
+            );
+          })}
+        </div>
+
+        <label style={{ display: "block", ...S.label, margin: "16px 0 4px" }}>
+          формальность · {i.formality}
+        </label>
+        <input type="range" min="1" max="5" value={i.formality}
+          onChange={(e) => onChange({ formality: +e.target.value })} style={{ width: "100%" }} />
+        <div style={{ fontSize: 11, color: C.ink60, marginTop: 2 }}>
+          1 — спорт и дом, 3 — повседневное, 5 — выход
+        </div>
+
+        <div style={{ display: "flex", gap: 8, marginTop: 20 }}>
+          <Btn variant="ghost" style={{ flex: 1 }} onClick={() => onChange({ fav: !i.fav })}>
+            {i.fav ? "★ любимая" : "☆ в любимые"}
+          </Btn>
+          {wishMode && <Btn variant="olive" style={{ flex: 1 }} onClick={() => { onChange({ isWish: false }); onClose(); }}>Купила</Btn>}
+          <Btn variant="ghost" style={{ color: C.rust, borderColor: C.rust }}
+            onClick={() => { onRemove(); onClose(); }}>Удалить</Btn>
+        </div>
+      </div>
+    </>
+  );
+}
+
 function Wardrobe({ items, ar, addItems, updateItem, removeItem, say, wishMode = false, wipeAll }) {
   const [busy, setBusy] = useState(0);
   const [queue, setQueue] = useState([]);
@@ -1729,46 +1808,15 @@ function Wardrobe({ items, ar, addItems, updateItem, removeItem, say, wishMode =
                 </div>
                 <span style={{ fontSize: 10, color: i.wear ? C.olive : C.ink60 }}>носила {i.wear || 0}</span>
               </div>
-              {open === i.id && (
-                <div onClick={(e) => e.stopPropagation()} style={{
-                  position: "absolute", left: -1, right: -1, top: "100%", zIndex: 30,
-                  border: `1px solid ${C.ink}`, borderTop: "none", background: C.card,
-                  padding: 12, boxShadow: "0 12px 28px rgba(28,30,34,.14)", minWidth: 190,
-                }}>
-                  <select value={i.category} onChange={(e) => updateItem(i.id, { category: e.target.value })}
-                    style={{ width: "100%", padding: 5, fontSize: 11, border: `1px solid ${C.line}`, background: C.paper, borderRadius: 2 }}>
-                    {CATS.map((c) => <option key={c.id} value={c.id}>{c.ru}</option>)}
-                  </select>
-                  <div style={{ display: "flex", gap: 3, marginTop: 6 }}>
-                    {SEASONS.map((s) => (
-                      <button key={s.id} onClick={() => updateItem(i.id, { seasons: i.seasons?.includes(s.id) ? i.seasons.filter(v => v !== s.id) : [...(i.seasons || []), s.id] })}
-                        style={{ ...S.label, fontSize: 9, flex: 1, padding: "4px 2px", cursor: "pointer", borderRadius: 2, border: `1px solid ${i.seasons?.includes(s.id) ? C.olive : C.line}`, background: i.seasons?.includes(s.id) ? C.olive : "transparent", color: i.seasons?.includes(s.id) ? "#fff" : C.ink60 }}>
-                        {s.ru}
-                      </button>
-                    ))}
-                  </div>
-                  <label style={{ display: "block", fontSize: 10, color: C.ink60, marginTop: 8 }}>
-                    формальность: {i.formality}
-                    <input type="range" min="1" max="5" value={i.formality} onChange={(e) => updateItem(i.id, { formality: +e.target.value })} style={{ width: "100%" }} />
-                  </label>
-                  <div style={{ display: "flex", gap: 6, marginTop: 10, flexWrap: "wrap" }}>
-                    <Btn size="sm" variant="ghost" style={{ flex: "1 1 auto", whiteSpace: "nowrap" }}
-                      onClick={() => updateItem(i.id, { fav: !i.fav })}>{i.fav ? "★ любимая" : "☆ в любимые"}</Btn>
-                    {wishMode && <Btn size="sm" variant="olive" onClick={() => updateItem(i.id, { isWish: false })}>Купила</Btn>}
-                    <Btn size="sm" variant="ghost" style={{ color: C.rust, borderColor: C.rust, whiteSpace: "nowrap" }}
-                      onClick={() => removeItem(i.id)}>Удалить</Btn>
-                  </div>
-                  <div style={{ marginTop: 8, textAlign: "right" }}>
-                    <button onClick={() => setOpen(null)} style={{ ...S.label, fontSize: 9, background: "none", border: "none", cursor: "pointer", color: C.ink60 }}>
-                      закрыть
-                    </button>
-                  </div>
-                </div>
-              )}
             </div>
           ))}
         </div>
       </Section>
+
+      <ItemDialog item={items.find((x) => x.id === open)} ar={ar} wishMode={wishMode}
+        onChange={(patch) => updateItem(open, patch)}
+        onRemove={() => removeItem(open)}
+        onClose={() => setOpen(null)} />
     </>
   );
 }
