@@ -367,66 +367,75 @@ function layout(items, tpl = "classic", ar = {}) {
   const uppers = items.filter((i) => UPPER.includes(i.category))
     .sort((a, b) => order(UPPER, a) - order(UPPER, b));
   const bottoms = items.filter((i) => BOTTOMS.includes(i.category));
-  const side = items.filter((i) => SIDE.includes(i.category))
-    .sort((a, b) => order(SIDE, a) - order(SIDE, b));
+  const shoes = items.filter((i) => i.category === "shoes");
+  const bags = items.filter((i) => i.category === "bag");
+  const smalls = items.filter((i) => ["jewelry", "accessory", "belt"].includes(i.category));
+
+  const OV = 0.15;    /* нахлёст вещей друг на друга */
+  const OV_SHOES = 0.05;
+  const NUDGE = 1.2;  /* ≈5 пикселей вправо от одежды */
 
   const out = [];
-  const leftW = side.length ? 70 : 100;
-  const gap = 2;
+  const size = (it) => sizeIn(it.category, ar[it.id]);
+  const put = (it, x, y, w, z) => { out.push({ itemId: it.id, x, y, w, rot: 0, z }); };
 
-  /* Верхние вещи рядами по три. Нахлёст небольшой и только краями —
-     перекрывать вещь целиком нельзя, но соприкасаться можно. */
-  let y = 3;
-  const rows = [];
-  for (let i = 0; i < uppers.length; i += 3) rows.push(uppers.slice(i, i + 3));
-  rows.forEach((row) => {
-    const sizes = row.map((i) => sizeIn(i.category, ar[i.id]));
-    const rowW = sizes.reduce((sum, s) => sum + s.w, 0) + gap * (row.length - 1);
-    const k = Math.min(1, (leftW - 4) / Math.max(rowW, 1));
-    let x = (leftW - rowW * k) / 2;
-    let rowH = 0;
-    row.forEach((it, i) => {
-      const w = sizes[i].w * k, h = sizes[i].h * k;
-      out.push({ itemId: it.id, x, y, w, rot: 0, z: out.length });
-      rowH = Math.max(rowH, h);
-      x += w * 1 + gap * k;
-    });
-    y += rowH + gap;
+  /* верх: в ряд с нахлёстом 15% */
+  const uSizes = uppers.map(size);
+  const rowW = uSizes.reduce((sum, s, i) => sum + (i ? s.w * (1 - OV) : s.w), 0);
+  let x = 3, rowTop = 3, rowBottom = 3;
+  uppers.forEach((it, i) => {
+    const { w, h } = uSizes[i];
+    put(it, x, rowTop, w, i);
+    rowBottom = Math.max(rowBottom, rowTop + h);
+    x += w * (1 - OV);
+  });
+  const rowRight = uppers.length ? 3 + rowW : 3;
+
+  /* низ: заходит на верх на 15% своей высоты, по центру ряда */
+  let clothesBottom = rowBottom, clothesRight = rowRight;
+  let bottomBox = null;
+  bottoms.forEach((it, i) => {
+    const { w, h } = size(it);
+    const y = (uppers.length ? rowBottom - h * OV : 3) + i * h * (1 - OV);
+    const bx = uppers.length ? 3 + (rowW - w) / 2 : 3;
+    put(it, bx, y, w, 10 + i);
+    bottomBox = { x: bx, y, w, h };
+    clothesBottom = Math.max(clothesBottom, y + h);
+    clothesRight = Math.max(clothesRight, bx + w);
   });
 
-  /* низ под верхом */
-  bottoms.forEach((it) => {
-    const s0 = sizeIn(it.category, ar[it.id]);
-    const k = Math.min(1, (leftW - 6) / s0.w);
-    const w = s0.w * k, h = s0.h * k;
-    out.push({ itemId: it.id, x: (leftW - w) / 2, y, w, rot: 0, z: out.length });
-    y += h + gap;
+  /* обувь: справа от низа, заходит на него на 5%, стоит на его нижней линии */
+  let shoesTop = null;
+  shoes.forEach((it, i) => {
+    const { w, h } = size(it);
+    const sx = bottomBox ? bottomBox.x + bottomBox.w - w * OV_SHOES : clothesRight + NUDGE;
+    const sy = (bottomBox ? bottomBox.y + bottomBox.h : clothesBottom) - h - i * h * 1.1;
+    put(it, sx, sy, w, 20 + i);
+    shoesTop = shoesTop === null ? sy : Math.min(shoesTop, sy);
+    clothesRight = Math.max(clothesRight, sx + w);
   });
-  const clothesBottom = y - gap;
 
-  /* Справа колонка мелочей сверху вниз; обувь — последняя, на уровне
-     низа одежды, чтобы не улетала в самый низ пустого холста. */
-  if (side.length) {
-    const colW = 100 - leftW;
-    const shoes = side.filter((i) => i.category === "shoes");
-    const small = side.filter((i) => i.category !== "shoes");
-    const put = (it, yy) => {
-      const s0 = sizeIn(it.category, ar[it.id]);
-      const k = Math.min(1, (colW - 3) / s0.w);
-      const w = s0.w * k, h = s0.h * k;
-      out.push({ itemId: it.id, x: leftW + (colW - w) / 2, y: yy, w, rot: 0, z: out.length });
-      return h;
-    };
-    let sy = 3;
-    small.forEach((it) => { sy += put(it, sy) + gap; });
-    shoes.forEach((it) => {
-      const s0 = sizeIn("shoes", ar[it.id]);
-      const k = Math.min(1, (colW - 3) / s0.w);
-      const h = s0.h * k;
-      const yy = Math.max(sy, clothesBottom - h);
-      put(it, yy);
-    });
-  }
+  /* сумка — справа от одежды, в верхней половине */
+  let sideY = rowTop;
+  bags.forEach((it, i) => {
+    const { w, h } = size(it);
+    put(it, rowRight + NUDGE, sideY, w, 15 + i);
+    sideY += h + 2;
+  });
+
+  /* Мелочи: на 5 пикселей правее одежды. Если верхов больше одного,
+     они опускаются в промежуток между низом верхней одежды и обувью. */
+  const gapTop = uppers.length > 1 ? rowBottom : rowTop;
+  const gapBottom = shoesTop !== null ? shoesTop : clothesBottom;
+  let my = uppers.length > 1
+    ? Math.max(gapTop, (gapTop + gapBottom) / 2 - smalls.length * 6)
+    : sideY;
+  smalls.forEach((it, i) => {
+    const { w, h } = size(it);
+    put(it, rowRight + NUDGE, my, w, 25 + i);
+    my += h + 2;
+  });
+
   return out;
 }
 
@@ -1588,81 +1597,74 @@ function Canvas({ look, setLook, itemsById, items, sel, setSel, onSwap, manual, 
 }
 
 /* ─────────────────────────  ГАРДЕРОБ  ───────────────────────── */
-/* Карточка вещи открывается модальным окном по центру: привязанная к
-   плитке панель всегда упиралась в край сетки и вылезала вправо. */
-function ItemDialog({ item, ar, onChange, onRemove, onClose, wishMode }) {
+/* Окно вещи выпадает из карточки, но само решает, в какую сторону
+   раскрыться: если справа не хватает места, прижимается к правому краю
+   плитки. Ширина фиксированная, поэтому кнопки не пляшут. */
+function ItemPopover({ item, ar, anchor, onChange, onRemove, onClose, wishMode }) {
+  const [side, setSide] = useState("left");
+  const W = 244;
+
   useEffect(() => {
+    if (!anchor) return;
+    const r = anchor.getBoundingClientRect();
+    setSide(r.left + W > window.innerWidth - 16 ? "right" : "left");
     const esc = (e) => e.key === "Escape" && onClose();
     document.addEventListener("keydown", esc);
     return () => document.removeEventListener("keydown", esc);
-  }, [onClose]);
+  }, [anchor, onClose]);
+
   if (!item) return null;
   const i = item;
 
   return (
-    <>
-      <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(28,30,34,.34)", zIndex: 80 }} />
-      <div role="dialog" style={{
-        position: "fixed", zIndex: 81, top: "50%", left: "50%", transform: "translate(-50%,-50%)",
-        width: "min(420px, 92vw)", maxHeight: "88vh", overflowY: "auto",
-        background: C.card, border: `1px solid ${C.line}`, boxShadow: "0 18px 48px rgba(28,30,34,.20)",
-        padding: 20, fontFamily: FONT,
-      }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
-          <div style={{ minWidth: 0 }}>
-            <div style={S.label}>вещь</div>
-            <input value={i.name} placeholder={catRu(i.category)}
-              onChange={(e) => onChange({ name: e.target.value })}
-              style={{ ...S.display, fontSize: 18, marginTop: 6, width: "100%", border: "none",
-                       borderBottom: `1px solid ${C.line}`, background: "transparent", color: C.ink, padding: "2px 0" }} />
-          </div>
-          <button onClick={onClose} aria-label="Закрыть"
-            style={{ background: "none", border: "none", cursor: "pointer", fontSize: 22, lineHeight: 1, color: C.ink60 }}>×</button>
-        </div>
+    <div onClick={(e) => e.stopPropagation()} style={{
+      position: "absolute", top: "100%", zIndex: 30, width: W,
+      ...(side === "left" ? { left: -1 } : { right: -1 }),
+      border: `1px solid ${C.ink}`, borderTop: "none", background: C.card,
+      padding: 12, boxShadow: "0 14px 30px rgba(28,30,34,.16)", cursor: "default",
+    }}>
+      <input value={i.name} placeholder={catRu(i.category)}
+        onChange={(e) => onChange({ name: e.target.value })}
+        style={{ width: "100%", fontSize: 13, padding: "6px 0", marginBottom: 10, color: C.ink,
+                 border: "none", borderBottom: `1px solid ${C.line}`, background: "transparent" }} />
 
-        <div style={{ background: C.paper, margin: "16px 0", padding: 10 }}>
-          <Thumb item={i} ar={ar} h={190} />
-        </div>
+      <select value={i.category} onChange={(e) => onChange({ category: e.target.value })}
+        style={{ width: "100%", padding: 7, fontSize: 12, border: `1px solid ${C.line}`,
+                 background: C.paper, borderRadius: 2, color: C.ink }}>
+        {CATS.map((c) => <option key={c.id} value={c.id}>{c.ru}</option>)}
+      </select>
 
-        <div style={{ ...S.label, marginBottom: 6 }}>категория</div>
-        <select value={i.category} onChange={(e) => onChange({ category: e.target.value })}
-          style={{ width: "100%", padding: 9, fontSize: 13, border: `1px solid ${C.line}`, background: C.paper, borderRadius: 2, color: C.ink }}>
-          {CATS.map((c) => <option key={c.id} value={c.id}>{c.ru}</option>)}
-        </select>
+      <div style={{ display: "flex", gap: 4, marginTop: 8 }}>
+        {SEASONS.map((s) => {
+          const on = i.seasons?.includes(s.id);
+          return (
+            <button key={s.id}
+              onClick={() => onChange({ seasons: on ? i.seasons.filter((v) => v !== s.id) : [...(i.seasons || []), s.id] })}
+              style={{ ...S.label, fontSize: 9, flex: 1, padding: "6px 2px", cursor: "pointer", borderRadius: 2,
+                       border: `1px solid ${on ? C.olive : C.line}`, background: on ? C.olive : "transparent",
+                       color: on ? "#fff" : C.ink60 }}>{s.ru}</button>
+          );
+        })}
+      </div>
 
-        <div style={{ ...S.label, margin: "16px 0 6px" }}>сезон</div>
-        <div style={{ display: "flex", gap: 6 }}>
-          {SEASONS.map((s) => {
-            const on = i.seasons?.includes(s.id);
-            return (
-              <button key={s.id}
-                onClick={() => onChange({ seasons: on ? i.seasons.filter((v) => v !== s.id) : [...(i.seasons || []), s.id] })}
-                style={{ ...S.label, fontSize: 9, flex: 1, padding: "9px 4px", cursor: "pointer", borderRadius: 2,
-                         border: `1px solid ${on ? C.olive : C.line}`, background: on ? C.olive : "transparent",
-                         color: on ? "#fff" : C.ink60 }}>{s.ru}</button>
-            );
-          })}
-        </div>
+      <label style={{ display: "block", ...S.label, fontSize: 9, margin: "12px 0 2px" }}>
+        формальность · {i.formality}
+      </label>
+      <input type="range" min="1" max="5" value={i.formality}
+        onChange={(e) => onChange({ formality: +e.target.value })} style={{ width: "100%" }} />
 
-        <label style={{ display: "block", ...S.label, margin: "16px 0 4px" }}>
-          формальность · {i.formality}
-        </label>
-        <input type="range" min="1" max="5" value={i.formality}
-          onChange={(e) => onChange({ formality: +e.target.value })} style={{ width: "100%" }} />
-        <div style={{ fontSize: 11, color: C.ink60, marginTop: 2 }}>
-          1 — спорт и дом, 3 — повседневное, 5 — выход
-        </div>
-
-        <div style={{ display: "flex", gap: 8, marginTop: 20 }}>
-          <Btn variant="ghost" style={{ flex: 1 }} onClick={() => onChange({ fav: !i.fav })}>
-            {i.fav ? "★ любимая" : "☆ в любимые"}
-          </Btn>
-          {wishMode && <Btn variant="olive" style={{ flex: 1 }} onClick={() => { onChange({ isWish: false }); onClose(); }}>Купила</Btn>}
-          <Btn variant="ghost" style={{ color: C.rust, borderColor: C.rust }}
+      <div style={{ display: "grid", gap: 6, marginTop: 12 }}>
+        <Btn size="sm" variant="ghost" onClick={() => onChange({ fav: !i.fav })}>
+          {i.fav ? "★ любимая" : "☆ в любимые"}
+        </Btn>
+        {wishMode && <Btn size="sm" variant="olive" onClick={() => { onChange({ isWish: false }); onClose(); }}>Купила</Btn>}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+          <Btn size="sm" variant="ghost" style={{ color: C.rust, borderColor: C.rust }}
             onClick={() => { onRemove(); onClose(); }}>Удалить</Btn>
+          <Btn size="sm" variant="ghost" onClick={onClose}>Закрыть</Btn>
         </div>
       </div>
-    </>
+    </div>
   );
 }
 
@@ -1673,6 +1675,7 @@ function Wardrobe({ items, ar, addItems, updateItem, removeItem, say, wishMode =
   const [sort, setSort] = useState("color");
   const [open, setOpen] = useState(null);
   const fileRef = useRef();
+  const cardRefs = useRef({});
 
   const onFiles = async (files) => {
     const arr = [...files].filter((f) => f.type.startsWith("image/"));
@@ -1795,9 +1798,11 @@ function Wardrobe({ items, ar, addItems, updateItem, removeItem, say, wishMode =
 
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(140px,1fr))", gap: 10, alignItems: "start" }}>
           {shown.map((i) => (
-            <div key={i.id} onClick={() => setOpen(open === i.id ? null : i.id)}
+            <div key={i.id} ref={(el) => { if (el) cardRefs.current[i.id] = el; }}
+              onClick={() => setOpen(open === i.id ? null : i.id)}
               style={{ border: `1px solid ${open === i.id ? C.ink : C.line}`, background: C.card,
-                       padding: 8, cursor: "pointer", position: "relative" }}>
+                       padding: 8, cursor: "pointer", position: "relative",
+                       zIndex: open === i.id ? 25 : 1 }}>
               <Thumb item={i} ar={ar} h={150} />
               <div style={{ ...S.label, marginTop: 6, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                 {i.name || catRu(i.category)}
@@ -1808,15 +1813,17 @@ function Wardrobe({ items, ar, addItems, updateItem, removeItem, say, wishMode =
                 </div>
                 <span style={{ fontSize: 10, color: i.wear ? C.olive : C.ink60 }}>носила {i.wear || 0}</span>
               </div>
+              {open === i.id && (
+                <ItemPopover item={i} ar={ar} anchor={cardRefs.current[i.id]} wishMode={wishMode}
+                  onChange={(patch) => updateItem(i.id, patch)}
+                  onRemove={() => removeItem(i.id)}
+                  onClose={() => setOpen(null)} />
+              )}
             </div>
           ))}
         </div>
       </Section>
 
-      <ItemDialog item={items.find((x) => x.id === open)} ar={ar} wishMode={wishMode}
-        onChange={(patch) => updateItem(open, patch)}
-        onRemove={() => removeItem(open)}
-        onClose={() => setOpen(null)} />
     </>
   );
 }
