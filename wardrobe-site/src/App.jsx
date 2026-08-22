@@ -4,16 +4,18 @@ import { api } from "./api";
 
 /* ─────────────────────────  ПАЛИТРА И ТОКЕНЫ  ───────────────────────── */
 const C = {
-  paper: "#EDE7DB",
-  paper2: "#E3DCCC",
-  card: "#F6F2E9",
-  ink: "#241F1A",
-  ink60: "#6B6157",
-  line: "#CFC5B2",
-  olive: "#6E7350",
-  chestnut: "#5A4436",
-  rust: "#8C4A32",
+  paper: "#F1F2F4",
+  paper2: "#E3E5E9",
+  card: "#F8F9FB",
+  ink: "#1C1E22",
+  ink60: "#666B73",
+  line: "#D5D8DE",
+  olive: "#4E5A67",
+  chestnut: "#7A818B",
+  rust: "#96504C",
 };
+
+const FONT = "'Inter', 'Helvetica Neue', 'Segoe UI', system-ui, Arial, sans-serif";
 
 const S = {
   label: {
@@ -23,20 +25,31 @@ const S = {
     color: C.ink60,
     fontWeight: 600,
   },
-  serif: { fontFamily: "Georgia, 'Times New Roman', serif" },
+  display: { fontFamily: FONT, fontWeight: 500, letterSpacing: "-0.015em" },
 };
 
 /* ─────────────────────────  СПРАВОЧНИКИ  ───────────────────────── */
 const CATS = [
   { id: "outerwear", ru: "Верхняя одежда", slot: 0, form: 3 },
-  { id: "top", ru: "Верх", slot: 1, form: 2 },
-  { id: "bottom", ru: "Низ", slot: 2, form: 2 },
-  { id: "dress", ru: "Платье / комплект", slot: 3, form: 3 },
-  { id: "shoes", ru: "Обувь", slot: 4, form: 2 },
-  { id: "bag", ru: "Сумка", slot: 5, form: 2 },
-  { id: "accessory", ru: "Аксессуар", slot: 6, form: 2 },
-  { id: "jewelry", ru: "Украшение", slot: 7, form: 3 },
+  { id: "blazer", ru: "Пиджак", slot: 1, form: 4 },
+  { id: "shirt", ru: "Рубашка", slot: 2, form: 3 },
+  { id: "top", ru: "Верх", slot: 3, form: 2 },
+  { id: "dress", ru: "Платье", slot: 4, form: 3 },
+  { id: "pants", ru: "Брюки и джинсы", slot: 5, form: 2 },
+  { id: "skirt", ru: "Юбка", slot: 5, form: 3 },
+  { id: "shorts", ru: "Шорты", slot: 5, form: 1 },
+  { id: "sweats", ru: "Спортивные брюки", slot: 5, form: 1 },
+  { id: "shoes", ru: "Обувь", slot: 6, form: 2 },
+  { id: "bag", ru: "Сумка", slot: 7, form: 2 },
+  { id: "belt", ru: "Ремень", slot: 8, form: 3 },
+  { id: "accessory", ru: "Аксессуар", slot: 8, form: 2 },
+  { id: "jewelry", ru: "Украшение", slot: 9, form: 3 },
 ];
+
+/* роли: что считается верхом и низом при сборке */
+const TOPS = ["top", "shirt", "dress"];
+const BOTTOMS = ["pants", "skirt", "shorts", "sweats", "bottom"];
+const BELT_OK = ["pants", "shorts", "bottom"];   /* к спортивным и юбке ремень не идёт */
 const catRu = (id) => CATS.find((c) => c.id === id)?.ru || id;
 
 const SEASONS = [
@@ -150,7 +163,10 @@ async function processFile(file, tol = 30, maxSize = 460) {
   ctx.putImageData(data, 0, 0);
   const cropped = tol > 0 ? trim(cv) : cv;
   const blob = await new Promise((r) => cropped.toBlob(r, "image/webp", 0.82));
-  return { blob, dataUrl: cropped.toDataURL("image/webp", 0.82), colors: pickColors(cropped) };
+  const aspect = cropped.height / cropped.width;
+  const colors = pickColors(cropped);
+  return { blob, dataUrl: cropped.toDataURL("image/webp", 0.82), colors, aspect,
+           guess: guessCategory(aspect, colors) };
 }
 
 /* Заливка от краёв. Цвет фона берём с рамки кадра, а не считаем белым,
@@ -250,66 +266,94 @@ function dist(a, b) {
   return Math.hypot(A[0] - B[0], A[1] - B[1], A[2] - B[2]);
 }
 
+/* Черновая догадка о категории по форме выреза: обувь широкая и низкая,
+   брюки узкие и длинные, верх — почти квадратный. Ошибается, поэтому
+   категория остаётся в списке на подтверждение. */
+function guessCategory(aspect, colors) {
+  const a = aspect || 1.2;
+  if (a < 0.62) return "shoes";
+  if (a < 0.85) return "bag";
+  if (a > 1.75) return "pants";
+  if (a > 1.35) return "skirt";
+  return "top";
+}
+
 /* ─────────────────────────  РАСКЛАДКА КОЛЛАЖА  ───────────────────────── */
-const TEMPLATES = {
-  classic: {
-    ru: "Классическая",
-    slots: {
-      outerwear: { x: 3, y: 5, w: 33 },
-      dress: { x: 30, y: 14, w: 40 },
-      top: { x: 36, y: 8, w: 40 },
-      bottom: { x: 9, y: 44, w: 33 },
-      shoes: { x: 44, y: 72, w: 26 },
-      bag: { x: 62, y: 46, w: 32 },
-      accessory: [{ x: 72, y: 2, w: 22 }, { x: 4, y: 78, w: 18 }],
-      jewelry: [{ x: 76, y: 22, w: 17 }, { x: 26, y: 88, w: 14 }],
-    },
-  },
-  column: {
-    ru: "Столбцом",
-    slots: {
-      outerwear: { x: 4, y: 3, w: 36 },
-      dress: { x: 26, y: 20, w: 44 },
-      top: { x: 30, y: 4, w: 44 },
-      bottom: { x: 24, y: 38, w: 44 },
-      shoes: { x: 20, y: 76, w: 30 },
-      bag: { x: 58, y: 62, w: 34 },
-      accessory: [{ x: 70, y: 6, w: 24 }, { x: 4, y: 60, w: 18 }],
-      jewelry: [{ x: 72, y: 30, w: 18 }, { x: 6, y: 44, w: 14 }],
-    },
-  },
-  scatter: {
-    ru: "Свободная",
-    slots: {
-      outerwear: { x: 46, y: 34, w: 34 },
-      dress: { x: 20, y: 26, w: 42 },
-      top: { x: 6, y: 6, w: 42 },
-      bottom: { x: 40, y: 52, w: 36 },
-      shoes: { x: 6, y: 70, w: 30 },
-      bag: { x: 4, y: 40, w: 28 },
-      accessory: [{ x: 58, y: 4, w: 24 }, { x: 74, y: 76, w: 20 }],
-      jewelry: [{ x: 54, y: 18, w: 16 }, { x: 30, y: 86, w: 14 }],
-    },
-  },
+/* У каждой категории своя рамка в процентах холста. Вещь вписывается в неё
+   целиком и центрируется, поэтому все низы получают одинаковый масштаб,
+   но шорты остаются короткими, а брюки длинными — упираются в разные
+   стороны рамки. То же с верхами: кроп-топ не растянется до туники. */
+const CANVAS_AR = 1.25;
+
+/* Для каждой категории задана площадь на холсте и предельная рамка.
+   Вещь масштабируется так, чтобы занимать одинаковую площадь с себе
+   подобными — тогда пара обуви сверху и пара сбоку выглядят одинаково.
+   Рамка не даёт длинному вылезти за поле: брюки упрутся в высоту и
+   станут узкими, шорты — в ширину и останутся короткими. */
+const SIZE = {
+  outerwear: { area: 1150, w: 34, h: 52 },
+  blazer:    { area: 1100, w: 34, h: 50 },
+  dress:     { area: 1200, w: 33, h: 54 },
+  shirt:     { area: 1000, w: 36, h: 40 },
+  top:       { area: 900,  w: 34, h: 38 },
+  pants:     { area: 1150, w: 30, h: 52 },
+  skirt:     { area: 1050, w: 30, h: 48 },
+  shorts:    { area: 780,  w: 30, h: 34 },
+  sweats:    { area: 1150, w: 30, h: 52 },
+  bottom:    { area: 1150, w: 30, h: 52 },
+  shoes:     { area: 360,  w: 36, h: 22 },
+  bag:       { area: 480,  w: 30, h: 26 },
+  belt:      { area: 260,  w: 20, h: 20 },
+  accessory: { area: 260,  w: 20, h: 18 },
+  jewelry:   { area: 150,  w: 16, h: 14 },
 };
 
-function layout(items, tpl = "classic") {
-  const slots = TEMPLATES[tpl].slots;
+function sizeIn(cat, aspect) {
+  const box = SIZE[cat] || SIZE.accessory;
+  const a = aspect || 1.2;
+  let w = Math.sqrt((box.area * CANVAS_AR) / a);
+  w = Math.min(w, box.w);
+  let h = (w * a) / CANVAS_AR;
+  if (h > box.h) { h = box.h; w = (h * CANVAS_AR) / a; }
+  return { w, h, box };
+}
+
+/* одна раскладка — сетка ролей; вещи не поворачиваются */
+const SLOTS = {
+  outerwear: { x: 2,  y: 4,  w: 34, h: 52 },
+  blazer:    { x: 2,  y: 4,  w: 34, h: 50 },
+  shirt:     { x: 36, y: 4,  w: 36, h: 40 },
+  top:       { x: 38, y: 6,  w: 34, h: 38 },
+  dress:     { x: 34, y: 10, w: 33, h: 54 },
+  pants:     { x: 8,  y: 44, w: 30, h: 52 },
+  skirt:     { x: 8,  y: 44, w: 30, h: 48 },
+  shorts:    { x: 8,  y: 48, w: 30, h: 34 },
+  sweats:    { x: 8,  y: 44, w: 30, h: 52 },
+  bottom:    { x: 8,  y: 44, w: 30, h: 52 },
+  shoes:     { x: 40, y: 74, w: 36, h: 22 },
+  bag:       { x: 66, y: 48, w: 30, h: 26 },
+  belt:      { x: 72, y: 20, w: 20, h: 20 },
+  accessory: [{ x: 74, y: 4, w: 20, h: 18 }, { x: 4, y: 82, w: 20, h: 18 }],
+  jewelry:   [{ x: 78, y: 26, w: 16, h: 14 }, { x: 30, y: 86, w: 16, h: 14 }],
+};
+
+function layout(items, tpl = "classic", ar = {}) {
   const used = {};
   return items.map((it, idx) => {
-    const raw = slots[it.category] || slots.accessory;
-    let pos;
+    const raw = SLOTS[it.category] || SLOTS.accessory;
+    let cell;
     if (Array.isArray(raw)) {
       const n = used[it.category] || 0;
       used[it.category] = n + 1;
-      pos = raw[n % raw.length];
-    } else pos = raw;
+      cell = raw[n % raw.length];
+    } else cell = raw;
+    const { w, h } = sizeIn(it.category, ar[it.id]);
     return {
       itemId: it.id,
-      x: pos.x + (Math.random() * 4 - 2),
-      y: pos.y + (Math.random() * 4 - 2),
-      w: pos.w,
-      rot: (Math.random() * 6 - 3),
+      x: cell.x + (cell.w - w) / 2,
+      y: cell.y + (cell.h - h) / 2,
+      w,
+      rot: 0,
       z: idx,
     };
   });
@@ -318,7 +362,6 @@ function layout(items, tpl = "classic") {
 /* Подгонка коллажа под холст: считаем общий габарит вещей и растягиваем
    его к краям. Чем меньше вещей, тем больше воздуха вокруг — чтобы три
    предмета не болтались в углах, а девять не задыхались. */
-const CANVAS_AR = 1.25;
 function fitPlaced(placed, itemsById, ar) {
   if (!placed.length || !ar) return placed;
   const boxes = placed.map((p) => {
@@ -336,7 +379,7 @@ function fitPlaced(placed, itemsById, ar) {
   if (bw <= 0 || bh <= 0) return placed;
 
   const n = placed.length;
-  const target = n <= 3 ? 0.80 : n <= 5 ? 0.88 : 0.94;
+  const target = n <= 3 ? 0.90 : n <= 5 ? 0.94 : 0.97;
   const k = Math.min((target * 100) / bw, (target * 100) / bh);
   const dx = (100 - bw * k) / 2 - x0 * k;
   const dy = (100 - bh * k) / 2 - y0 * k;
@@ -375,7 +418,7 @@ function buildLook(pool, opts) {
   const ok = (it) =>
     !it.isWish &&
     (season === "any" || !it.seasons?.length || it.seasons.includes(season));
-  const by = (c) => pool.filter((i) => i.category === c && ok(i));
+  const by = (c) => pool.filter((i) => (Array.isArray(c) ? c.includes(i.category) : i.category === c) && ok(i));
   const pick = (arr) => (arr.length ? arr[Math.floor(Math.random() * arr.length)] : null);
   const occ = OCCASIONS.find((o) => o.id === occasion);
 
@@ -386,19 +429,35 @@ function buildLook(pool, opts) {
     if (pinnedItem) chosen.push(pinnedItem);
     const has = (c) => chosen.some((i) => i.category === c);
 
-    const useDress = !has("top") && !has("bottom") && by("dress").length && Math.random() < 0.3;
-    if (useDress && !has("dress")) chosen.push(pick(by("dress")));
+    const hasRole = (list) => chosen.some((i) => list.includes(i.category));
+    const useDress = !hasRole(TOPS) && !hasRole(BOTTOMS) && by("dress").length && Math.random() < 0.25;
+    if (useDress) chosen.push(pick(by("dress")));
+
     if (!has("dress")) {
-      if (!has("top")) { const t = pick(by("top")); if (t) chosen.push(t); }
-      if (!has("bottom")) { const b = pick(by("bottom")); if (b) chosen.push(b); }
+      if (!hasRole(["top", "shirt"])) {
+        /* рубашка поверх топа — распространённый слой, собираем его иногда вместе */
+        const shirts = by("shirt"), plain = by("top");
+        if (shirts.length && plain.length && Math.random() < 0.3) {
+          chosen.push(pick(plain)); chosen.push(pick(shirts));
+        } else {
+          const t = pick([...plain, ...shirts]); if (t) chosen.push(t);
+        }
+      }
+      if (!hasRole(BOTTOMS)) { const b = pick(by(BOTTOMS)); if (b) chosen.push(b); }
     }
     if (!has("shoes")) { const sh = pick(by("shoes")); if (sh) chosen.push(sh); }
-    if (season === "winter" && !has("outerwear")) { const o = pick(by("outerwear")); if (o) chosen.push(o); }
-    else if (season === "demi" && !has("outerwear") && Math.random() < 0.6) { const o = pick(by("outerwear")); if (o) chosen.push(o); }
+    const outers = [...by("outerwear"), ...by("blazer")];
+    if (season === "winter" && !hasRole(["outerwear", "blazer"])) { const o = pick(by("outerwear")) || pick(outers); if (o) chosen.push(o); }
+    else if (season !== "summer" && !hasRole(["outerwear", "blazer"]) && Math.random() < 0.55) { const o = pick(outers); if (o) chosen.push(o); }
     if (!has("bag") && Math.random() < 0.75) { const g = pick(by("bag")); if (g) chosen.push(g); }
     /* аксессуар — необязательная деталь, а не обязательный элемент.
        Больше половины образов обходятся без него, а те, что уже мелькали
        в этой подборке, пропускаем, чтобы один ремень не кочевал везде. */
+    /* ремень уместен к брюкам, джинсам и шортам, но не к спортивным и юбке */
+    const bottomCat = chosen.find((i) => BOTTOMS.includes(i.category))?.category;
+    const beltFits = BELT_OK.includes(bottomCat);
+    if (beltFits && !has("belt") && Math.random() < 0.3) { const bl = pick(by("belt")); if (bl) chosen.push(bl); }
+
     const avoid = new Set(opts.avoid || []);
     const fresh = [...by("accessory"), ...by("jewelry")].filter((e) => !avoid.has(e.id));
     const nExtra = Math.random() < 0.55 ? 0 : Math.random() < 0.85 ? 1 : 2;
@@ -422,7 +481,7 @@ function buildLook(pool, opts) {
     id: "look_" + Date.now() + "_" + Math.floor(Math.random() * 1e4),
     name: "",
     season, occasion, tpl,
-    placed: layout(ordered, tpl),
+    placed: layout(ordered, tpl, opts.ar || {}),
     score: Math.round(best.score),
     createdAt: Date.now(),
     wornDates: [],
@@ -455,11 +514,11 @@ async function exportPng(look, itemsById, name) {
     const x = 64 + i * 150;
     ctx.fillStyle = hex; ctx.fillRect(x, 60, 120, 90);
     ctx.fillStyle = "#fff"; ctx.fillRect(x, 150, 120, 54);
-    ctx.fillStyle = C.ink; ctx.font = "bold 17px Georgia";
+    ctx.fillStyle = C.ink; ctx.font = "600 17px Inter, Helvetica, Arial";
     ctx.fillText(colorName(hex), x + 10, 182);
   });
   ctx.fillStyle = C.ink;
-  ctx.font = "italic 46px Georgia";
+  ctx.font = "500 44px Inter, Helvetica, Arial";
   ctx.fillText(name || "Капсула", 64, 268);
 
   const top = 300, area = H - top - 70;
@@ -528,7 +587,7 @@ const Section = ({ eyebrow, title, children, right }) => (
     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 12, marginBottom: 14 }}>
       <div>
         {eyebrow && <div style={S.label}>{eyebrow}</div>}
-        <h2 style={{ ...S.serif, fontSize: 24, margin: "4px 0 0", color: C.ink, fontWeight: 400 }}>{title}</h2>
+        <h2 style={{ ...S.display, fontSize: 24, margin: "4px 0 0", color: C.ink, fontWeight: 400 }}>{title}</h2>
       </div>
       {right}
     </div>
@@ -579,9 +638,9 @@ function Auth() {
   };
 
   return (
-    <div style={{ minHeight: "100vh", background: C.paper, color: C.ink, display: "grid", placeItems: "center", padding: 20, fontFamily: "'Helvetica Neue', Arial, sans-serif" }}>
+    <div style={{ minHeight: "100vh", background: C.paper, color: C.ink, display: "grid", placeItems: "center", padding: 20, fontFamily: FONT }}>
       <div style={{ width: "100%", maxWidth: 360 }}>
-        <div style={{ ...S.serif, fontSize: 30, marginBottom: 6 }}>Гардероб<span style={{ color: C.olive }}>.</span></div>
+        <div style={{ ...S.display, fontSize: 30, marginBottom: 6 }}>Гардероб</div>
         <div style={{ fontSize: 13, color: C.ink60, lineHeight: 1.6, marginBottom: 22 }}>
           Войди по паролю или запроси ссылку на почту. Гардероб будет одинаковым на телефоне и на ноутбуке.
         </div>
@@ -614,6 +673,125 @@ function Auth() {
         )}
       </div>
     </div>
+  );
+}
+
+/* ─────────────────────────  МЕНЮ ПОЛЬЗОВАТЕЛЯ  ───────────────────────── */
+function UserMenu({ email, count }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+
+  useEffect(() => {
+    const away = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", away);
+    return () => document.removeEventListener("mousedown", away);
+  }, []);
+
+  const leave = () => {
+    if (window.confirm("Точно выйти из аккаунта?")) supabase.auth.signOut();
+  };
+
+  const initial = (email || "?")[0].toUpperCase();
+
+  return (
+    <div ref={ref} style={{ position: "relative", marginLeft: 6 }}>
+      <button onClick={() => setOpen(!open)} aria-label="Меню пользователя"
+        style={{
+          width: 30, height: 30, borderRadius: "50%", cursor: "pointer",
+          border: `1px solid ${open ? C.ink : C.line}`, background: C.card,
+          color: C.ink, fontSize: 12, fontWeight: 600, fontFamily: FONT,
+        }}>{initial}</button>
+
+      {open && (
+        <div style={{
+          position: "absolute", right: 0, top: 38, width: 232, zIndex: 60,
+          border: `1px solid ${C.line}`, background: C.card, boxShadow: "0 8px 24px rgba(28,30,34,.10)",
+        }}>
+          <div style={{ padding: 14, borderBottom: `1px solid ${C.line}` }}>
+            <div style={{ fontSize: 13, wordBreak: "break-all" }}>{email}</div>
+            <div style={{ ...S.label, fontSize: 9, marginTop: 6 }}>вещей в гардеробе: {count}</div>
+          </div>
+
+          <div style={{ padding: 14, borderBottom: `1px solid ${C.line}` }}>
+            <div style={{ ...S.label, fontSize: 9, marginBottom: 8 }}>язык</div>
+            <div style={{ display: "flex", gap: 6 }}>
+              <Chip active onClick={() => {}}>Русский</Chip>
+              <Chip active={false} onClick={() => alert("Английская версия ещё готовится")}>English</Chip>
+            </div>
+          </div>
+
+          <button onClick={leave} style={{
+            width: "100%", textAlign: "left", padding: "12px 14px", cursor: "pointer",
+            background: "none", border: "none", color: C.rust, ...S.label,
+          }}>Выйти</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ─────────────────────────  О ПРОЕКТЕ  ───────────────────────── */
+function About({ items, looks, onStart }) {
+  const real = items.filter((i) => !i.isWish);
+  const tops = real.filter((i) => TOPS.includes(i.category)).length;
+  const bottoms = real.filter((i) => BOTTOMS.includes(i.category)).length;
+  const shoes = real.filter((i) => i.category === "shoes").length;
+  const combos = tops * bottoms * shoes;
+
+  const Card = ({ n, t, d }) => (
+    <div style={{ border: `1px solid ${C.line}`, background: C.card, padding: 18 }}>
+      <div style={{ ...S.label, fontSize: 9, color: C.olive }}>{n}</div>
+      <div style={{ ...S.display, fontSize: 17, margin: "8px 0 6px" }}>{t}</div>
+      <div style={{ fontSize: 13, color: C.ink60, lineHeight: 1.6 }}>{d}</div>
+    </div>
+  );
+
+  return (
+    <>
+      <div style={{ padding: "26px 0 34px", borderBottom: `1px solid ${C.line}`, marginBottom: 30 }}>
+        <div style={{ ...S.label, marginBottom: 14 }}>капсульный гардероб</div>
+        <h1 style={{ ...S.display, fontSize: "clamp(30px, 6vw, 52px)", margin: 0, lineHeight: 1.12, maxWidth: 720 }}>
+          Всё, что у тебя есть, — и всё, что из этого можно собрать.
+        </h1>
+        <p style={{ fontSize: 15, color: C.ink60, lineHeight: 1.7, maxWidth: 560, marginTop: 18 }}>
+          Загружаешь фотографии вещей, фон убирается сам, цвета считываются с ткани.
+          Дальше приложение перебирает сочетания и показывает готовые капсулы —
+          проверяя цвет, формальность и сезон, но оставляя последнее слово за тобой.
+        </p>
+        <div style={{ display: "flex", gap: 8, marginTop: 22, flexWrap: "wrap" }}>
+          <Btn onClick={() => onStart("feed")}>Смотреть подборку</Btn>
+          <Btn variant="ghost" onClick={() => onStart("wardrobe")}>Открыть гардероб</Btn>
+        </div>
+      </div>
+
+      {real.length > 0 && (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(120px,1fr))", gap: 1, background: C.line, border: `1px solid ${C.line}`, marginBottom: 34 }}>
+          {[[real.length, "вещей"], [combos, "сочетаний"], [looks.length, "капсул сохранено"],
+            [real.filter((i) => i.wear > 0).length, "вещей в деле"]].map(([v, t]) => (
+            <div key={t} style={{ background: C.card, padding: "18px 14px" }}>
+              <div style={{ ...S.display, fontSize: 26 }}>{v}</div>
+              <div style={{ ...S.label, fontSize: 9, marginTop: 4 }}>{t}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(240px,1fr))", gap: 14, marginBottom: 34 }}>
+        <Card n="01" t="Гардероб" d="Фотографируешь вещь на контрастном фоне — фон убирается, цвета определяются, категория подставляется сама. Остаётся подтвердить." />
+        <Card n="02" t="Подборка" d="Девять готовых капсул при каждом открытии. Фильтры по сезону и поводу, кнопка «другой» меняет один образ, не трогая остальные." />
+        <Card n="03" t="Студия" d="Ручная сборка и правка: вещи двигаются, меняют размер и порядок слоёв. Можно закрепить вещь и собрать образ вокруг неё." />
+        <Card n="04" t="Аналитика" d="Сколько сочетаний даёт гардероб, какая доля из них удачная, что лежит без дела и чего не хватает — с объяснением, а не просто списком." />
+      </div>
+
+      <div style={{ border: `1px solid ${C.line}`, background: C.card, padding: 20 }}>
+        <div style={{ ...S.display, fontSize: 17, marginBottom: 10 }}>Как устроен подбор</div>
+        <p style={{ fontSize: 13, color: C.ink60, lineHeight: 1.7, margin: 0 }}>
+          Алгоритм собирает сотни вариантов и оценивает каждый: не больше двух ярких цветов на нейтральной базе,
+          близкая формальность вещей, совпадение по сезону, редко надёванное — выше в очереди.
+          Он не видит силуэта и принта, поэтому это помощник, а не стилист: последнее слово остаётся за тобой.
+        </p>
+      </div>
+    </>
   );
 }
 
@@ -756,7 +934,7 @@ export default function App() {
     : null;
 
   const screen = (text) => (
-    <div style={{ minHeight: "100vh", background: C.paper, display: "grid", placeItems: "center", ...S.serif, color: C.ink }}>{text}</div>
+    <div style={{ minHeight: "100vh", background: C.paper, display: "grid", placeItems: "center", ...S.display, color: C.ink }}>{text}</div>
   );
   if (session === undefined) return screen("…");
   if (!session) return <Auth />;
@@ -774,11 +952,14 @@ export default function App() {
   ];
 
   return (
-    <div style={{ minHeight: "100vh", background: C.paper, color: C.ink, fontFamily: "'Helvetica Neue', Arial, sans-serif" }}>
+    <div style={{ minHeight: "100vh", background: C.paper, color: C.ink, fontFamily: FONT }}>
       <header style={{ borderBottom: `1px solid ${C.line}`, padding: "14px 16px", position: "sticky", top: 0, background: C.paper, zIndex: 40 }}>
         <div style={{ maxWidth: 1180, margin: "0 auto", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16 }}>
-          <div style={{ ...S.serif, fontSize: 19 }}>Гардероб<span style={{ color: C.olive }}>.</span></div>
-          <nav style={{ display: "flex", gap: 4, overflowX: "auto" }} className="hide-scroll">
+          <button onClick={() => setTab("about")} title="О проекте"
+            style={{ ...S.display, fontSize: 19, background: "none", border: "none", cursor: "pointer", color: C.ink, padding: 0 }}>
+            Гардероб
+          </button>
+          <nav style={{ display: "flex", gap: 4, alignItems: "center", overflowX: "auto" }} className="hide-scroll">
             {TABS.map((t) => (
               <button key={t.id} onClick={() => setTab(t.id)} style={{
                 ...S.label, padding: "8px 10px", cursor: "pointer", background: "none", border: "none",
@@ -786,15 +967,13 @@ export default function App() {
                 borderBottom: `2px solid ${tab === t.id ? C.olive : "transparent"}`,
               }}>{t.ru}</button>
             ))}
-            <button onClick={() => supabase.auth.signOut()} title={session.user.email}
-              style={{ ...S.label, padding: "8px 10px", cursor: "pointer", background: "none", border: "none", color: C.ink60 }}>
-              Выйти
-            </button>
+            <UserMenu email={session.user.email} count={items.length} />
           </nav>
         </div>
       </header>
 
       <main style={{ maxWidth: 1180, margin: "0 auto", padding: "22px 16px 90px" }}>
+        {tab === "about" && <About items={items} looks={looks} onStart={setTab} />}
         {tab === "feed" && (
           <Feed items={items} itemsById={itemsById} ar={ar} looks={looks} saveLooks={saveLooks}
             markWorn={markWorn} say={say} openInStudio={openInStudio} suggestedSeason={suggestedSeason} />
@@ -825,12 +1004,13 @@ export default function App() {
       )}
       <style>{`.hide-scroll::-webkit-scrollbar{display:none}
         .studio-grid{display:grid;gap:14px;align-items:start}
-        @media (min-width: 860px){
-          .studio-grid{grid-template-columns:minmax(0,1fr) 300px;height:min(78vh,760px)}
-          .studio-grid > *{height:100%;overflow:auto}
+        @media (min-width: 900px){
+          .studio-grid{grid-template-columns:minmax(0,1fr) 280px;height:min(74vh,700px)}
+          .studio-grid > *{height:100%;min-height:0;overflow:hidden}
+          .studio-grid > aside{overflow:hidden}
         }
-        @media (max-width: 859px){
-          .studio-grid > aside{max-height:340px}
+        @media (max-width: 899px){
+          .studio-grid > aside{max-height:320px}
         }
         .panel-scroll::-webkit-scrollbar{width:6px}
         .panel-scroll::-webkit-scrollbar-thumb{background:#CFC5B2;border-radius:3px}
@@ -854,7 +1034,7 @@ function Feed({ items, itemsById, ar, looks, saveLooks, markWorn, say, openInStu
     const out = [];
     const usedExtras = [];
     for (let k = 0; k < n * 8 && out.length < n; k++) {
-      const l = buildLook(items, { season, occasion, pinned: null, tpl: "classic", avoid: usedExtras });
+      const l = buildLook(items, { season, occasion, pinned: null, tpl: "classic", avoid: usedExtras, ar });
       if (!l) break;
       const key = l.placed.map((p) => p.itemId).sort().join("|");
       if (out.some((o) => o.placed.map((p) => p.itemId).sort().join("|") === key)) continue;
@@ -877,7 +1057,7 @@ function Feed({ items, itemsById, ar, looks, saveLooks, markWorn, say, openInStu
 
   const replaceOne = (idx) => {
     const used = variants.flatMap((v) => v.placed.map((p) => p.itemId));
-    const l = buildLook(items, { season, occasion, pinned: null, tpl: "classic", avoid: used });
+    const l = buildLook(items, { season, occasion, pinned: null, tpl: "classic", avoid: used, ar });
     if (l) setVariants((prev) => prev.map((v, i) =>
       (i === idx ? { ...l, placed: fitPlaced(l.placed, itemsById, ar) } : v)));
   };
@@ -912,7 +1092,7 @@ function Feed({ items, itemsById, ar, looks, saveLooks, markWorn, say, openInStu
 
       {busy && <div style={{ fontSize: 13, color: C.ink60, marginBottom: 12 }}>Собираю варианты…</div>}
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(230px,1fr))", gap: 14 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(210px,1fr))", gap: 12 }}>
         {variants.map((l, idx) => {
           const its = l.placed.map((p) => itemsById[p.itemId]).filter(Boolean);
           const pal = its.length ? lookPalette(its) : [];
@@ -964,7 +1144,7 @@ function Studio({ draft, items, itemsById, ar, looks, saveLooks, weather, sugges
   useEffect(() => { if (draft) { setLook(draft); setSel(null); setManual(false); } }, [draft]);
 
   const gen = () => {
-    const l = buildLook(items, { season, occasion, pinned, tpl });
+    const l = buildLook(items, { season, occasion, pinned, tpl, ar });
     if (!l) return say("Не хватает вещей — добавь хотя бы верх, низ и обувь");
     setLook({ ...l, placed: fitPlaced(l.placed, itemsById, ar) });
     setSel(null); setManual(false);
@@ -977,7 +1157,7 @@ function Studio({ draft, items, itemsById, ar, looks, saveLooks, weather, sugges
     for (let n = 0; n < 40 && out.length < 12; n++) {
       const uncovered = pool.filter((i) => !covered.has(i.id) && ["top", "bottom", "dress", "outerwear"].includes(i.category));
       const anchor = uncovered.length ? uncovered[0].id : null;
-      const l = buildLook(pool, { season, occasion, pinned: anchor, tpl });
+      const l = buildLook(pool, { season, occasion, pinned: anchor, tpl, ar });
       if (!l) break;
       const key = l.placed.map((p) => p.itemId).sort().join("|");
       if (out.some((o) => o.placed.map((p) => p.itemId).sort().join("|") === key)) continue;
@@ -1020,7 +1200,7 @@ function Studio({ draft, items, itemsById, ar, looks, saveLooks, weather, sugges
   };
 
   const addToLook = (item) => {
-    const p = layout([item], look.tpl)[0];
+    const p = layout([item], look.tpl, ar)[0];
     p.z = look.placed.length;
     setLook({ ...look, placed: [...look.placed, p] });
   };
@@ -1040,7 +1220,7 @@ function Studio({ draft, items, itemsById, ar, looks, saveLooks, weather, sugges
           <div>
             <div style={S.label}>Погода</div>
             {weather && !weather.error ? (
-              <div style={{ ...S.serif, fontSize: 22, marginTop: 2 }}>
+              <div style={{ ...S.display, fontSize: 22, marginTop: 2 }}>
                 {weather.t}° <span style={{ fontSize: 13, color: C.ink60 }}>{settings.cityLabel}{weather.rain ? " · осадки" : ""}</span>
               </div>
             ) : (
@@ -1072,11 +1252,6 @@ function Studio({ draft, items, itemsById, ar, looks, saveLooks, weather, sugges
               <Chip key={o.id} active={occasion === o.id} onClick={() => setOccasion(o.id)}>{o.ru}</Chip>
             ))}
           </div>
-          <div style={{ display: "flex", gap: 6, overflowX: "auto" }} className="hide-scroll">
-            {Object.entries(TEMPLATES).map(([k, v]) => (
-              <Chip key={k} active={tpl === k} onClick={() => { setTpl(k); if (look) setLook({ ...look, tpl: k, placed: layout(look.placed.map(p => itemsById[p.itemId]).filter(Boolean), k) }); }}>{v.ru}</Chip>
-            ))}
-          </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 4 }}>
             <Btn onClick={gen}>Собрать капсулу</Btn>
             <Btn variant="ghost" onClick={genAll}>Собрать из всех вещей</Btn>
@@ -1105,8 +1280,9 @@ function Studio({ draft, items, itemsById, ar, looks, saveLooks, weather, sugges
       )}
 
       {!look && items.length > 0 && (
-        <div style={{ border: `1px dashed ${C.line}`, padding: 40, textAlign: "center", color: C.ink60, fontSize: 13 }}>
-          Нажми «Собрать капсулу» — образ появится здесь.
+        <div style={{ border: `1px dashed ${C.line}`, padding: 48, textAlign: "center", color: C.ink60, fontSize: 13, lineHeight: 1.6 }}>
+          Нажми «Собрать капсулу» — образ появится здесь.<br />
+          Гардероб для ручной сборки откроется рядом с холстом.
         </div>
       )}
       {items.length === 0 && (
@@ -1115,24 +1291,13 @@ function Studio({ draft, items, itemsById, ar, looks, saveLooks, weather, sugges
         </div>
       )}
 
-      {!look && items.length > 0 && (
-        <div style={{ marginTop: 24 }}>
-          <div style={{ ...S.label, marginBottom: 8 }}>
-            Закрепить вещь — нажми, и следующий образ соберётся с ней
-          </div>
-          <div style={{ maxHeight: 320, display: "flex" }}>
-            <ItemsPanel items={items} title="Гардероб" pinned={pinned}
-              onPick={(i) => setPinned(pinned === i.id ? null : i.id)} />
-          </div>
-        </div>
-      )}
-
     </>
   );
 }
 
 /* ─────────────────────────  ПАНЕЛЬ ВЕЩЕЙ  ───────────────────────── */
-const PANEL_ORDER = ["shoes", "top", "bottom", "outerwear", "dress", "bag", "accessory", "jewelry"];
+const PANEL_ORDER = ["shoes", "top", "shirt", "pants", "skirt", "shorts", "sweats", "bottom",
+  "dress", "blazer", "outerwear", "bag", "belt", "accessory", "jewelry"];
 
 function ItemsPanel({ items, onPick, pinned, onPin, title = "Добавить вещь" }) {
   const [q, setQ] = useState("");
@@ -1228,18 +1393,18 @@ function Canvas({ look, setLook, itemsById, items, sel, setSel, onSwap, manual, 
             <div style={{ width: 34, height: 34, background: hex, border: `1px solid ${C.line}` }} />
             <div>
               <div style={{ ...S.label, fontSize: 9 }}>{hex.toUpperCase()}</div>
-              <div style={{ ...S.serif, fontSize: 13 }}>{colorName(hex)}</div>
+              <div style={{ ...S.display, fontSize: 13 }}>{colorName(hex)}</div>
             </div>
           </div>
         ))}
         <input value={look.name} onChange={(e) => setLook({ ...look, name: e.target.value })}
           placeholder="Назови капсулу"
-          style={{ marginLeft: "auto", border: "none", borderBottom: `1px solid ${C.line}`, background: "transparent", ...S.serif, fontSize: 16, padding: "4px 2px", color: C.ink, minWidth: 130 }} />
+          style={{ marginLeft: "auto", border: "none", borderBottom: `1px solid ${C.line}`, background: "transparent", ...S.display, fontSize: 16, padding: "4px 2px", color: C.ink, minWidth: 130 }} />
       </div>
 
       {/* холст */}
       <div ref={ref} onClick={(e) => { if (e.target === ref.current) setSel(null); }}
-        style={{ position: "relative", width: "100%", maxWidth: 480, margin: "0 auto", paddingTop: "min(125%, 560px)", background: C.paper, overflow: "hidden", touchAction: "none" }}>
+        style={{ position: "relative", flex: 1, minHeight: 0, width: "100%", maxWidth: "min(100%, 46vh)", aspectRatio: "4 / 5", margin: "0 auto", background: C.paper, overflow: "hidden", touchAction: "none" }}>
         {look.placed.map((p, idx) => {
           const it = itemsById[p.itemId];
           if (!it) return null;
@@ -1270,11 +1435,6 @@ function Canvas({ look, setLook, itemsById, items, sel, setSel, onSwap, manual, 
             размер
             <input type="range" min="6" max="70" value={look.placed[sel].w}
               onChange={(e) => patch("w", +e.target.value)} style={{ width: 90 }} />
-          </label>
-          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: C.ink60 }}>
-            наклон
-            <input type="range" min="-25" max="25" value={look.placed[sel].rot || 0}
-              onChange={(e) => patch("rot", +e.target.value)} style={{ width: 80 }} />
           </label>
           <Btn size="sm" variant="ghost" onClick={() => patch("z", Math.max(...look.placed.map((p) => p.z)) + 1)}>Вперёд</Btn>
           <Btn size="sm" variant="ghost" onClick={() => onSwap(sel)}>Заменить</Btn>
@@ -1308,10 +1468,10 @@ function Wardrobe({ items, addItems, updateItem, removeItem, say, wishMode = fal
     const out = [];
     for (const f of arr) {
       try {
-        const { blob, dataUrl, colors } = await processFile(f, 25);
+        const { blob, dataUrl, colors, guess } = await processFile(f, 25);
         out.push({
           id: "it_" + Date.now() + "_" + Math.floor(Math.random() * 1e5),
-          name: "", category: "top", img: dataUrl, blob, colors, file: f, tol: 25,
+          name: "", category: guess, img: dataUrl, blob, colors, file: f, tol: 25,
           seasons: [], formality: 2, fav: false, wear: 0, lastWorn: null,
           isWish: wishMode,
         });
@@ -1498,7 +1658,7 @@ function Wishlist(props) {
               <div key={w.id} style={{ display: "flex", alignItems: "center", gap: 12, border: `1px solid ${C.line}`, background: C.card, padding: 10 }}>
                 <img src={w.img} alt="" style={{ width: 44, height: 44, objectFit: "contain" }} />
                 <div style={{ flex: 1 }}>
-                  <div style={{ ...S.serif, fontSize: 15 }}>{w.name || catRu(w.category)}</div>
+                  <div style={{ ...S.display, fontSize: 15 }}>{w.name || catRu(w.category)}</div>
                   <div style={{ fontSize: 11, color: C.ink60 }}>
                     {n === 0 ? "Пока не с чем сочетать" : `Собирается образов: около ${n} из 12 попыток`}
                   </div>
@@ -1537,7 +1697,7 @@ function Capsules({ looks, itemsById, ar, saveLooks, markWorn, say }) {
                 })}
               </div>
               <div style={{ padding: 10 }}>
-                <div style={{ ...S.serif, fontSize: 16 }}>{l.name || "Без названия"}</div>
+                <div style={{ ...S.display, fontSize: 16 }}>{l.name || "Без названия"}</div>
                 <div style={{ ...S.label, marginTop: 3 }}>
                   {SEASONS.find(s => s.id === l.season)?.ru || "Любой сезон"} · надета {l.wornDates?.length || 0} раз
                 </div>
@@ -1587,14 +1747,16 @@ function Insights({ items, looks }) {
     /* сколько образов вообще складывается и сколько из них удачные */
     const combos = {};
     SEASONS.forEach((s) => {
-      const tops = [...by("top"), ...by("dress")].filter((i) => inSeason(i, s.id));
-      const bottoms = by("bottom").filter((i) => inSeason(i, s.id));
+      const tops = real.filter((i) => TOPS.includes(i.category) && inSeason(i, s.id));
+      const bottoms = real.filter((i) => BOTTOMS.includes(i.category) && inSeason(i, s.id));
       const shoes = by("shoes").filter((i) => inSeason(i, s.id));
       combos[s.id] = { total: tops.length * bottoms.length * shoes.length, tops: tops.length, bottoms: bottoms.length, shoes: shoes.length };
     });
 
     /* доля сочетаний, которые проходят проверку по цвету и формальности */
-    const tops = [...by("top"), ...by("dress")], bottoms = by("bottom"), shoes = by("shoes");
+    const tops = real.filter((i) => TOPS.includes(i.category));
+    const bottoms = real.filter((i) => BOTTOMS.includes(i.category));
+    const shoes = by("shoes");
     let good = 0, tried = 0;
     if (tops.length && bottoms.length && shoes.length) {
       for (let n = 0; n < 400; n++) {
@@ -1614,10 +1776,10 @@ function Insights({ items, looks }) {
     /* покрытие сезонов по ключевым ролям */
     const cover = SEASONS.map((s) => ({
       s,
-      top: [...by("top"), ...by("dress")].filter((i) => inSeason(i, s.id)).length,
-      bottom: by("bottom").filter((i) => inSeason(i, s.id)).length,
+      top: real.filter((i) => TOPS.includes(i.category) && inSeason(i, s.id)).length,
+      bottom: real.filter((i) => BOTTOMS.includes(i.category) && inSeason(i, s.id)).length,
       shoes: by("shoes").filter((i) => inSeason(i, s.id)).length,
-      outer: by("outerwear").filter((i) => inSeason(i, s.id)).length,
+      outer: real.filter((i) => ["outerwear", "blazer"].includes(i.category) && inSeason(i, s.id)).length,
     }));
 
     const inLooks = new Set(looks.flatMap((l) => l.placed.map((p) => p.itemId)));
@@ -1637,18 +1799,20 @@ function Insights({ items, looks }) {
     const n = by(cat).length;
     if (n < min) advice.push({ t: `${catRu(cat)}: ${n} из ${min}`, d: why });
   };
-  need("top", 5, "Верх меняется чаще всего — на нём держится разнообразие образов.");
-  need("bottom", 3, "Каждый новый низ умножает количество образов, а не прибавляет.");
+  const roleCount = (list) => real.filter((i) => list.includes(i.category)).length;
+  if (roleCount(TOPS) < 5) advice.push({ t: `Верх: ${roleCount(TOPS)} из 5`, d: "Верх меняется чаще всего — на нём держится разнообразие образов." });
+  if (roleCount(BOTTOMS) < 3) advice.push({ t: `Низ: ${roleCount(BOTTOMS)} из 3`, d: "Каждый новый низ умножает количество образов, а не прибавляет." });
   need("shoes", 2, "Одна пара обуви делает все образы похожими друг на друга.");
-  need("outerwear", 1, "Без верхней одежды половина года выпадает из гардероба.");
+  if (roleCount(["outerwear", "blazer"]) < 1) advice.push({ t: "Верхней одежды нет", d: "Без неё половина года выпадает из гардероба." });
 
   if (real.length >= 6) {
     const share = accent / real.length;
     if (share === 0) advice.push({ t: "Гардероб полностью нейтральный", d: "Всё сочетается со всем, но образы получаются плоскими. Одна цветная вещь оживит подборку." });
     else if (share > 0.6) advice.push({ t: "Ярких вещей больше половины", d: "Не хватает нейтральной базы-связки: цветное плохо сочетается с цветным, и алгоритм отбраковывает такие пары." });
   }
-  const lightBottoms = by("bottom").filter((i) => ["light", "neutral"].includes(family(i.colors?.[0] || "#888")));
-  if (by("bottom").length >= 2 && !lightBottoms.length)
+  const allBottoms = real.filter((i) => BOTTOMS.includes(i.category));
+  const lightBottoms = allBottoms.filter((i) => ["light", "neutral"].includes(family(i.colors?.[0] || "#888")));
+  if (allBottoms.length >= 2 && !lightBottoms.length)
     advice.push({ t: "Все низы тёмные", d: "Светлые брюки или юбка дадут второй вариант основы и заметно расширят палитру." });
 
   cover.forEach((c) => {
@@ -1678,7 +1842,7 @@ function Insights({ items, looks }) {
 
   const Num = ({ v, t }) => (
     <div style={{ border: `1px solid ${C.line}`, background: C.card, padding: 14 }}>
-      <div style={{ ...S.serif, fontSize: 28, lineHeight: 1.1 }}>{v}</div>
+      <div style={{ ...S.display, fontSize: 28, lineHeight: 1.1 }}>{v}</div>
       <div style={{ ...S.label, fontSize: 9, marginTop: 6 }}>{t}</div>
     </div>
   );
@@ -1705,7 +1869,7 @@ function Insights({ items, looks }) {
           <div style={{ display: "grid", gap: 8 }}>
             {advice.map((g, i) => (
               <div key={i} style={{ border: `1px solid ${C.line}`, borderLeft: `3px solid ${C.rust}`, background: C.card, padding: 12 }}>
-                <div style={{ ...S.serif, fontSize: 15 }}>{g.t}</div>
+                <div style={{ ...S.display, fontSize: 15 }}>{g.t}</div>
                 <div style={{ fontSize: 12, color: C.ink60, marginTop: 4, lineHeight: 1.5 }}>{g.d}</div>
               </div>
             ))}
@@ -1738,7 +1902,7 @@ function Insights({ items, looks }) {
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(200px,1fr))", gap: 14 }}>
           {cover.map((c) => (
             <div key={c.s.id} style={{ border: `1px solid ${C.line}`, background: C.card, padding: 14 }}>
-              <div style={{ ...S.serif, fontSize: 17, marginBottom: 2 }}>{c.s.ru}</div>
+              <div style={{ ...S.display, fontSize: 17, marginBottom: 2 }}>{c.s.ru}</div>
               <div style={{ ...S.label, fontSize: 9, marginBottom: 10 }}>
                 образов: {combos[c.s.id].total}
               </div>
