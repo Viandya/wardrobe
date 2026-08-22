@@ -308,6 +308,32 @@ const SIZE = {
   jewelry:   { area: 150,  w: 16, h: 14 },
 };
 
+/* Доля площади миниатюры: рубашка крупнее футболки, ремень мельче брюк —
+   ровно так же, как в коллаже. Иначе в сетке всё выглядит вразнобой. */
+const AREA_MAX = 1200;
+function thumbSize(cat, aspect, fill = 0.82) {
+  const rel = ((SIZE[cat] || SIZE.accessory).area / AREA_MAX) * fill;
+  const a = aspect || 1.2;
+  let w = Math.sqrt(rel / a) * 100;
+  let h = w * a;
+  if (w > 97) { w = 97; h = w * a; }
+  if (h > 97) { h = 97; w = h / a; }
+  return { w, h };
+}
+
+function Thumb({ item, ar, fill, h }) {
+  const a = ar?.[item.id];
+  const { w, h: hh } = thumbSize(item.category, a, fill);
+  const box = h ? { height: h } : { aspectRatio: "1" };
+  return (
+    <div style={{ ...box, display: "grid", placeItems: "center", overflow: "hidden" }}>
+      <img src={item.img} alt="" draggable={false}
+        style={a ? { width: `${w}%`, height: `${hh}%`, objectFit: "contain" }
+                 : { maxWidth: "84%", maxHeight: "84%", objectFit: "contain" }} />
+    </div>
+  );
+}
+
 function sizeIn(cat, aspect) {
   const box = SIZE[cat] || SIZE.accessory;
   const a = aspect || 1.2;
@@ -318,45 +344,80 @@ function sizeIn(cat, aspect) {
   return { w, h, box };
 }
 
-/* одна раскладка — сетка ролей; вещи не поворачиваются */
-const SLOTS = {
-  outerwear: { x: 2,  y: 4,  w: 34, h: 52 },
-  blazer:    { x: 2,  y: 4,  w: 34, h: 50 },
-  shirt:     { x: 36, y: 4,  w: 36, h: 40 },
-  top:       { x: 38, y: 6,  w: 34, h: 38 },
-  dress:     { x: 34, y: 10, w: 33, h: 54 },
-  pants:     { x: 8,  y: 44, w: 30, h: 52 },
-  skirt:     { x: 8,  y: 44, w: 30, h: 48 },
-  shorts:    { x: 8,  y: 48, w: 30, h: 34 },
-  sweats:    { x: 8,  y: 44, w: 30, h: 52 },
-  bottom:    { x: 8,  y: 44, w: 30, h: 52 },
-  shoes:     { x: 40, y: 74, w: 36, h: 22 },
-  bag:       { x: 66, y: 48, w: 30, h: 26 },
-  belt:      { x: 72, y: 20, w: 20, h: 20 },
-  accessory: [{ x: 74, y: 4, w: 20, h: 18 }, { x: 4, y: 82, w: 20, h: 18 }],
-  jewelry:   [{ x: 78, y: 26, w: 16, h: 14 }, { x: 30, y: 86, w: 16, h: 14 }],
-};
+/* Раскладка как на коллажах-референсах: слева одежда — верх в ряд,
+   под ним низ; справа узкая колонка из мелочей сверху вниз: украшения,
+   аксессуары, ремень, сумка, обувь. Слои раскладываются рядом со сдвигом,
+   чтобы обе вещи было видно, а не одна поверх другой. */
+const UPPER = ["outerwear", "blazer", "shirt", "top", "dress"];
+const SIDE = ["jewelry", "accessory", "belt", "bag", "shoes"];
 
 function layout(items, tpl = "classic", ar = {}) {
-  const used = {};
-  return items.map((it, idx) => {
-    const raw = SLOTS[it.category] || SLOTS.accessory;
-    let cell;
-    if (Array.isArray(raw)) {
-      const n = used[it.category] || 0;
-      used[it.category] = n + 1;
-      cell = raw[n % raw.length];
-    } else cell = raw;
-    const { w, h } = sizeIn(it.category, ar[it.id]);
-    return {
-      itemId: it.id,
-      x: cell.x + (cell.w - w) / 2,
-      y: cell.y + (cell.h - h) / 2,
-      w,
-      rot: 0,
-      z: idx,
-    };
+  const order = (list, x) => list.indexOf(x.category);
+  const uppers = items.filter((i) => UPPER.includes(i.category))
+    .sort((a, b) => order(UPPER, a) - order(UPPER, b));
+  const bottoms = items.filter((i) => BOTTOMS.includes(i.category));
+  const side = items.filter((i) => SIDE.includes(i.category))
+    .sort((a, b) => order(SIDE, a) - order(SIDE, b));
+
+  const out = [];
+  const leftW = side.length ? 66 : 100;
+
+  /* верхние вещи в ряд с небольшим нахлёстом */
+  const sizes = uppers.map((i) => sizeIn(i.category, ar[i.id]));
+  const overlap = -2;   /* зазор, а не нахлёст: обе вещи должны читаться */
+  const rowW = sizes.reduce((sum, s) => sum + s.w, 0) - overlap * Math.max(0, uppers.length - 1);
+  const k = Math.min(1, (leftW - 6) / Math.max(rowW, 1));
+  let x = (leftW - rowW * k) / 2;
+  let bottomOfRow = 4;
+  uppers.forEach((it, i) => {
+    const w = sizes[i].w * k, h = sizes[i].h * k;
+    out.push({ itemId: it.id, x, y: 4, w, rot: 0, z: i });
+    bottomOfRow = Math.max(bottomOfRow, 4 + h);
+    x += w - overlap * k;
   });
+
+  /* низ под верхом, по центру левой части */
+  let y = uppers.length ? bottomOfRow - 4 : 6;
+  bottoms.forEach((it, i) => {
+    const s = sizeIn(it.category, ar[it.id]);
+    const kk = Math.min(1, (leftW - 10) / s.w);
+    const w = s.w * kk, h = s.h * kk;
+    out.push({ itemId: it.id, x: (leftW - w) / 2, y, w, rot: 0, z: 10 + i });
+    y += h + 2;
+  });
+
+  /* колонка мелочей справа */
+  if (side.length) {
+    const colW = 100 - leftW;
+    const raw = side.map((i) => sizeIn(i.category, ar[i.id]));
+    const gap = 3;
+    const totalH = raw.reduce((sum, s) => sum + s.h, 0) + gap * (side.length - 1);
+    const kv = Math.min(1, 92 / Math.max(totalH, 1));
+    let sy = 4;
+    side.forEach((it, i) => {
+      const kk = Math.min(kv, (colW - 4) / raw[i].w);
+      const w = raw[i].w * kk, h = raw[i].h * kk;
+      out.push({ itemId: it.id, x: leftW + (colW - w) / 2, y: sy, w, rot: 0, z: 20 + i });
+      sy += h + gap;
+    });
+  }
+
+  /* Композиция выходит широкой и низкой, а холст вытянутый. Разводим вещи
+     по вертикали от центра, пока пропорция не приблизится к холсту, —
+     размеры при этом не меняются, просто уходит пустота снизу. */
+  const hOf = (p) => (p.w * (ar[p.itemId] || 1.2)) / CANVAS_AR;
+  const top = Math.min(...out.map((p) => p.y));
+  const bot = Math.max(...out.map((p) => p.y + hOf(p)));
+  const left = Math.min(...out.map((p) => p.x));
+  const right = Math.max(...out.map((p) => p.x + p.w));
+  const bw = right - left, bh = bot - top;
+  const want = 1.16;
+  if (bh > 0 && bh / bw < want) {
+    const f = Math.min(1.35, (want * bw) / bh);
+    const cy = (top + bot) / 2;
+    out.forEach((p) => { p.y = cy + (p.y + hOf(p) / 2 - cy) * f - hOf(p) / 2; });
+  }
+  return out;
 }
 
 /* Подгонка коллажа под холст: считаем общий габарит вещей и растягиваем
@@ -477,6 +538,7 @@ function buildLook(pool, opts) {
   const ordered = [...best.items].sort(
     (a, b) => (CATS.find((c) => c.id === a.category)?.slot ?? 9) - (CATS.find((c) => c.id === b.category)?.slot ?? 9)
   );
+  /* рубашка уходит назад, топ поверх неё — тогда видно обе вещи */
   return {
     id: "look_" + Date.now() + "_" + Math.floor(Math.random() * 1e4),
     name: "",
@@ -677,62 +739,78 @@ function Auth() {
 }
 
 /* ─────────────────────────  МЕНЮ ПОЛЬЗОВАТЕЛЯ  ───────────────────────── */
-function UserMenu({ email, count }) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef(null);
-
+function UserPanel({ email, items, looks, onClose }) {
   useEffect(() => {
-    const away = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
-    document.addEventListener("mousedown", away);
-    return () => document.removeEventListener("mousedown", away);
-  }, []);
+    const esc = (e) => e.key === "Escape" && onClose();
+    document.addEventListener("keydown", esc);
+    return () => document.removeEventListener("keydown", esc);
+  }, [onClose]);
 
   const leave = () => {
     if (window.confirm("Точно выйти из аккаунта?")) supabase.auth.signOut();
   };
 
-  const initial = (email || "?")[0].toUpperCase();
+  const real = items.filter((i) => !i.isWish);
+  const Row = ({ k, v }) => (
+    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "9px 0", borderBottom: `1px solid ${C.line}` }}>
+      <span style={{ color: C.ink60 }}>{k}</span><span>{v}</span>
+    </div>
+  );
 
   return (
-    <div ref={ref} style={{ position: "relative", marginLeft: 6 }}>
-      <button onClick={() => setOpen(!open)} aria-label="Меню пользователя"
-        style={{
-          width: 30, height: 30, borderRadius: "50%", cursor: "pointer",
-          border: `1px solid ${open ? C.ink : C.line}`, background: C.card,
-          color: C.ink, fontSize: 12, fontWeight: 600, fontFamily: FONT,
-        }}>{initial}</button>
-
-      {open && (
-        <div style={{
-          position: "absolute", right: 0, top: 38, width: 232, zIndex: 60,
-          border: `1px solid ${C.line}`, background: C.card, boxShadow: "0 8px 24px rgba(28,30,34,.10)",
-        }}>
-          <div style={{ padding: 14, borderBottom: `1px solid ${C.line}` }}>
-            <div style={{ fontSize: 13, wordBreak: "break-all" }}>{email}</div>
-            <div style={{ ...S.label, fontSize: 9, marginTop: 6 }}>вещей в гардеробе: {count}</div>
+    <>
+      <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(28,30,34,.28)", zIndex: 90 }} />
+      <div style={{
+        position: "fixed", top: 0, right: 0, bottom: 0, width: "min(340px, 88vw)", zIndex: 91,
+        background: C.card, borderLeft: `1px solid ${C.line}`, padding: 22, overflowY: "auto",
+        boxShadow: "-12px 0 32px rgba(28,30,34,.10)", fontFamily: FONT,
+      }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+          <div>
+            <div style={{ ...S.label }}>аккаунт</div>
+            <div style={{ ...S.display, fontSize: 17, marginTop: 6, wordBreak: "break-all" }}>{email}</div>
           </div>
-
-          <div style={{ padding: 14, borderBottom: `1px solid ${C.line}` }}>
-            <div style={{ ...S.label, fontSize: 9, marginBottom: 8 }}>язык</div>
-            <div style={{ display: "flex", gap: 6 }}>
-              <Chip active onClick={() => {}}>Русский</Chip>
-              <Chip active={false} onClick={() => alert("Английская версия ещё готовится")}>English</Chip>
-            </div>
-          </div>
-
-          <button onClick={leave} style={{
-            width: "100%", textAlign: "left", padding: "12px 14px", cursor: "pointer",
-            background: "none", border: "none", color: C.rust, ...S.label,
-          }}>Выйти</button>
+          <button onClick={onClose} aria-label="Закрыть"
+            style={{ background: "none", border: "none", cursor: "pointer", fontSize: 22, lineHeight: 1, color: C.ink60 }}>×</button>
         </div>
-      )}
-    </div>
+
+        <div style={{ marginTop: 22 }}>
+          <Row k="вещей" v={real.length} />
+          <Row k="капсул сохранено" v={looks.length} />
+          <Row k="вещей в деле" v={real.filter((i) => i.wear > 0).length} />
+          <Row k="в списке желаний" v={items.filter((i) => i.isWish).length} />
+        </div>
+
+        <div style={{ marginTop: 26 }}>
+          <div style={{ ...S.label, marginBottom: 10 }}>язык</div>
+          <div style={{ display: "flex", gap: 6 }}>
+            <Chip active onClick={() => {}}>Русский</Chip>
+            <Chip active={false} onClick={() => alert("Английская версия ещё готовится")}>English</Chip>
+          </div>
+        </div>
+
+        <div style={{ marginTop: 30 }}>
+          <Btn variant="ghost" onClick={leave} style={{ width: "100%", color: C.rust, borderColor: C.rust }}>
+            Выйти из аккаунта
+          </Btn>
+        </div>
+      </div>
+    </>
   );
 }
 
 /* ─────────────────────────  О ПРОЕКТЕ  ───────────────────────── */
-function About({ items, looks, onStart }) {
+function About({ items, looks, ar, onStart }) {
   const real = items.filter((i) => !i.isWish);
+  const itemsById = useMemo(() => Object.fromEntries(items.map((i) => [i.id, i])), [items]);
+
+  /* витрина: последняя сохранённая капсула, иначе собираем на лету */
+  const showcase = useMemo(() => {
+    if (looks.length) return looks[0];
+    if (real.length < 3) return null;
+    const l = buildLook(items, { season: "any", occasion: "daily", tpl: "classic", ar });
+    return l ? { ...l, placed: fitPlaced(l.placed, itemsById, ar) } : null;
+  }, [looks, items, ar]);
   const tops = real.filter((i) => TOPS.includes(i.category)).length;
   const bottoms = real.filter((i) => BOTTOMS.includes(i.category)).length;
   const shoes = real.filter((i) => i.category === "shoes").length;
@@ -748,20 +826,39 @@ function About({ items, looks, onStart }) {
 
   return (
     <>
-      <div style={{ padding: "26px 0 34px", borderBottom: `1px solid ${C.line}`, marginBottom: 30 }}>
-        <div style={{ ...S.label, marginBottom: 14 }}>капсульный гардероб</div>
-        <h1 style={{ ...S.display, fontSize: "clamp(30px, 6vw, 52px)", margin: 0, lineHeight: 1.12, maxWidth: 720 }}>
-          Всё, что у тебя есть, — и всё, что из этого можно собрать.
-        </h1>
-        <p style={{ fontSize: 15, color: C.ink60, lineHeight: 1.7, maxWidth: 560, marginTop: 18 }}>
-          Загружаешь фотографии вещей, фон убирается сам, цвета считываются с ткани.
-          Дальше приложение перебирает сочетания и показывает готовые капсулы —
-          проверяя цвет, формальность и сезон, но оставляя последнее слово за тобой.
-        </p>
-        <div style={{ display: "flex", gap: 8, marginTop: 22, flexWrap: "wrap" }}>
-          <Btn onClick={() => onStart("feed")}>Смотреть подборку</Btn>
-          <Btn variant="ghost" onClick={() => onStart("wardrobe")}>Открыть гардероб</Btn>
+      <div className="hero-grid" style={{ padding: "26px 0 34px", borderBottom: `1px solid ${C.line}`, marginBottom: 30 }}>
+        <div>
+          <div style={{ ...S.label, marginBottom: 14 }}>капсульный гардероб</div>
+          <h1 style={{ ...S.display, fontSize: "clamp(28px, 4.4vw, 46px)", margin: 0, lineHeight: 1.12 }}>
+            Всё, что у тебя есть, — и всё, что из этого можно собрать.
+          </h1>
+          <p style={{ fontSize: 15, color: C.ink60, lineHeight: 1.7, maxWidth: 520, marginTop: 18 }}>
+            Загружаешь фотографии вещей, фон убирается сам, цвета считываются с ткани.
+            Дальше приложение перебирает сочетания и показывает готовые капсулы —
+            проверяя цвет, формальность и сезон, но оставляя последнее слово за тобой.
+          </p>
+          <div style={{ display: "flex", gap: 8, marginTop: 22, flexWrap: "wrap" }}>
+            <Btn onClick={() => onStart("feed")}>Смотреть подборку</Btn>
+            <Btn variant="ghost" onClick={() => onStart("wardrobe")}>Открыть гардероб</Btn>
+          </div>
         </div>
+
+        {showcase && (
+          <div style={{ border: `1px solid ${C.line}`, background: C.card, padding: 10 }}>
+            <div style={{ position: "relative", paddingTop: "125%", background: C.paper, overflow: "hidden" }}>
+              {showcase.placed.map((p, i) => {
+                const it = itemsById[p.itemId];
+                if (!it) return null;
+                return <img key={i} src={it.img} alt="" style={{
+                  position: "absolute", left: `${p.x}%`, top: `${p.y}%`, width: `${p.w}%`, zIndex: p.z,
+                }} />;
+              })}
+            </div>
+            <div style={{ ...S.label, fontSize: 9, marginTop: 8, textAlign: "center" }}>
+              {showcase.name || "капсула из твоих вещей"}
+            </div>
+          </div>
+        )}
       </div>
 
       {real.length > 0 && (
@@ -800,6 +897,7 @@ export default function App() {
   const [session, setSession] = useState(undefined);
   const [tab, setTab] = useState("feed");
   const [draft, setDraft] = useState(null);
+  const [menu, setMenu] = useState(false);
   const [items, setItems] = useState([]);
   const [looks, setLooks] = useState([]);
   const [settings, setSettings] = useState({ city: "", lat: null, lon: null, cityLabel: "" });
@@ -967,13 +1065,17 @@ export default function App() {
                 borderBottom: `2px solid ${tab === t.id ? C.olive : "transparent"}`,
               }}>{t.ru}</button>
             ))}
-            <UserMenu email={session.user.email} count={items.length} />
+            <button onClick={() => setMenu(true)} aria-label="Меню пользователя"
+              style={{
+                width: 30, height: 30, borderRadius: "50%", cursor: "pointer", marginLeft: 8, flex: "0 0 auto",
+                border: `1px solid ${C.line}`, background: C.card, color: C.ink, fontSize: 12, fontWeight: 600, fontFamily: FONT,
+              }}>{(session.user.email || "?")[0].toUpperCase()}</button>
           </nav>
         </div>
       </header>
 
       <main style={{ maxWidth: 1180, margin: "0 auto", padding: "22px 16px 90px" }}>
-        {tab === "about" && <About items={items} looks={looks} onStart={setTab} />}
+        {tab === "about" && <About items={items} looks={looks} ar={ar} onStart={setTab} />}
         {tab === "feed" && (
           <Feed items={items} itemsById={itemsById} ar={ar} looks={looks} saveLooks={saveLooks}
             markWorn={markWorn} say={say} openInStudio={openInStudio} suggestedSeason={suggestedSeason} />
@@ -984,7 +1086,7 @@ export default function App() {
             saveSettings={saveSettings} say={say} markWorn={markWorn} />
         )}
         {tab === "wardrobe" && (
-          <Wardrobe items={items} addItems={addItems} updateItem={updateItem}
+          <Wardrobe items={items} ar={ar} addItems={addItems} updateItem={updateItem}
             removeItem={removeItem} say={say} wipeAll={wipeAll} />
         )}
         {tab === "capsules" && (
@@ -992,9 +1094,13 @@ export default function App() {
         )}
         {tab === "insights" && <Insights items={items} looks={looks} />}
         {tab === "wish" && (
-          <Wishlist items={items} addItems={addItems} updateItem={updateItem} removeItem={removeItem} say={say} />
+          <Wishlist items={items} ar={ar} addItems={addItems} updateItem={updateItem} removeItem={removeItem} say={say} />
         )}
       </main>
+
+      {menu && (
+        <UserPanel email={session.user.email} items={items} looks={looks} onClose={() => setMenu(false)} />
+      )}
 
       {toast && (
         <div style={{ position: "fixed", bottom: 22, left: "50%", transform: "translateX(-50%)",
@@ -1003,6 +1109,8 @@ export default function App() {
         </div>
       )}
       <style>{`.hide-scroll::-webkit-scrollbar{display:none}
+        .hero-grid{display:grid;gap:26px;align-items:center}
+        @media (min-width: 900px){ .hero-grid{grid-template-columns:1.35fr 0.65fr} }
         .studio-grid{display:grid;gap:14px;align-items:start}
         @media (min-width: 900px){
           .studio-grid{grid-template-columns:minmax(0,1fr) 280px;height:min(74vh,700px)}
@@ -1275,7 +1383,7 @@ function Studio({ draft, items, itemsById, ar, looks, saveLooks, weather, sugges
             onExport={() => exportPng(look, itemsById, look.name || "Капсула")}
             onWorn={() => markWorn(look)}
           />
-          <ItemsPanel items={items} onPick={addToLook} pinned={pinned} onPin={setPinned} />
+          <ItemsPanel items={items} ar={ar} onPick={addToLook} pinned={pinned} onPin={setPinned} />
         </div>
       )}
 
@@ -1296,10 +1404,13 @@ function Studio({ draft, items, itemsById, ar, looks, saveLooks, weather, sugges
 }
 
 /* ─────────────────────────  ПАНЕЛЬ ВЕЩЕЙ  ───────────────────────── */
+/* Миниатюры в одном масштабе: обувь не должна занимать столько же места,
+   сколько брюки. Доля высоты карточки берётся из площади категории. */
+
 const PANEL_ORDER = ["shoes", "top", "shirt", "pants", "skirt", "shorts", "sweats", "bottom",
   "dress", "blazer", "outerwear", "bag", "belt", "accessory", "jewelry"];
 
-function ItemsPanel({ items, onPick, pinned, onPin, title = "Добавить вещь" }) {
+function ItemsPanel({ items, ar, onPick, pinned, onPin, title = "Добавить вещь" }) {
   const [q, setQ] = useState("");
   const pool = items.filter((i) => !i.isWish)
     .filter((i) => !q || (i.name || catRu(i.category)).toLowerCase().includes(q.toLowerCase()));
@@ -1327,11 +1438,11 @@ function ItemsPanel({ items, onPick, pinned, onPin, title = "Добавить в
                   onClick={() => onPick(i)}
                   onContextMenu={(e) => { if (onPin) { e.preventDefault(); onPin(i.id); } }}
                   style={{
-                    aspectRatio: "1", background: C.paper, cursor: "pointer", padding: 3, borderRadius: 2,
+                    background: C.paper, cursor: "pointer", padding: 3, borderRadius: 2,
                     border: `1px solid ${pinned === i.id ? C.olive : C.line}`,
                     boxShadow: `inset 0 -3px 0 ${i.colors?.[0] || C.line}`,
                   }}>
-                  <img src={i.img} alt="" style={{ width: "100%", height: "100%", objectFit: "contain" }} />
+                  <Thumb item={i} ar={ar} fill={0.92} />
                 </button>
               ))}
             </div>
@@ -1453,7 +1564,7 @@ function Canvas({ look, setLook, itemsById, items, sel, setSel, onSwap, manual, 
 }
 
 /* ─────────────────────────  ГАРДЕРОБ  ───────────────────────── */
-function Wardrobe({ items, addItems, updateItem, removeItem, say, wishMode = false, wipeAll }) {
+function Wardrobe({ items, ar, addItems, updateItem, removeItem, say, wishMode = false, wipeAll }) {
   const [busy, setBusy] = useState(0);
   const [queue, setQueue] = useState([]);
   const [filter, setFilter] = useState("all");
@@ -1512,20 +1623,17 @@ function Wardrobe({ items, addItems, updateItem, removeItem, say, wishMode = fal
   return (
     <>
       <Section eyebrow={wishMode ? "Список желаний" : "Мои вещи"} title={wishMode ? "Хочу купить" : `Гардероб · ${shown.length}`}
-        right={<Btn onClick={() => fileRef.current.click()}>Загрузить фото</Btn>}>
-        <input ref={fileRef} type="file" accept="image/*" multiple hidden onChange={(e) => onFiles(e.target.files)} />
-        {!wishMode && wipeAll && items.length > 0 && (
-          <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
-            <Btn size="sm" variant="ghost" style={{ color: C.rust, borderColor: C.rust }}
-              onClick={() => window.confirm("Удалить все вещи и капсулы?") && wipeAll()}>Очистить всё</Btn>
+        right={
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            {busy > 0 && <span style={{ ...S.label, fontSize: 9 }}>обрабатываю · {busy}</span>}
+            {!wishMode && wipeAll && items.length > 0 && (
+              <Btn size="sm" variant="ghost" style={{ color: C.rust, borderColor: C.rust }}
+                onClick={() => window.confirm("Удалить все вещи и капсулы?") && wipeAll()}>Очистить</Btn>
+            )}
+            <Btn onClick={() => fileRef.current.click()}>Загрузить фото</Btn>
           </div>
-        )}
-
-        <div onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); onFiles(e.dataTransfer.files); }}
-          style={{ border: `1px dashed ${C.line}`, padding: 18, textAlign: "center", fontSize: 12, color: C.ink60, marginBottom: 18 }}>
-          {busy ? `Обрабатываю фото… осталось ${busy}` : "Перетащи фото сюда или нажми «Загрузить фото». Снимай вещь на светлом фоне — он уберётся сам."}
-        </div>
-
+        }>
+        <input ref={fileRef} type="file" accept="image/*" multiple hidden onChange={(e) => onFiles(e.target.files)} />
         {queue.length > 0 && (
           <div style={{ border: `1px solid ${C.olive}`, padding: 14, marginBottom: 20, background: C.card }}>
             <div style={{ ...S.label, marginBottom: 10 }}>Проверь категории — потом сохрани</div>
@@ -1583,13 +1691,11 @@ function Wardrobe({ items, addItems, updateItem, removeItem, say, wishMode = fal
           <Chip active={sort === "wear"} onClick={() => setSort("wear")}>По носке</Chip>
         </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(130px,1fr))", gap: 10 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(140px,1fr))", gap: 10, alignItems: "start" }}>
           {shown.map((i) => (
             <div key={i.id} onClick={() => setOpen(open === i.id ? null : i.id)}
               style={{ border: `1px solid ${C.line}`, background: C.card, padding: 8, cursor: "pointer" }}>
-              <div style={{ aspectRatio: "1", display: "grid", placeItems: "center" }}>
-                <img src={i.img} alt="" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} />
-              </div>
+              <Thumb item={i} ar={ar} h={150} />
               <div style={{ ...S.label, marginTop: 6, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                 {i.name || catRu(i.category)}
               </div>
